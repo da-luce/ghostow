@@ -2,7 +2,10 @@ package main
 
 import (
 	"bufio"
+	"bytes"
+	"crypto/sha256"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/user"
@@ -122,12 +125,6 @@ func createSymlinks(sourceDir, targetDir string, force, createDirs, confirm bool
 	return err
 }
 
-type Stats struct {
-	Linked   int
-	Unlinked int
-	Ignored  int
-}
-
 // contains checks if the ignore list contains the given file/directory path
 func contains(ignoreList []string, path string) bool {
 	for _, ignorePath := range ignoreList {
@@ -138,52 +135,151 @@ func contains(ignoreList []string, path string) bool {
 	return false
 }
 
+// ignorePath checks if the given file or directory name matches any pattern in the ignore list.
+// It returns true if the path should be ignored.
+func ignoreName(name string, ignore []string) (bool, error) {
+	for _, pattern := range ignore {
+		matched, err := filepath.Match(pattern, name)
+		if err != nil {
+			return false, fmt.Errorf("error matching pattern %s: %v", pattern, err)
+		}
+		if matched {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func isSymlink(path string) (bool, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return false, err
+	}
+	return info.Mode()&os.ModeSymlink != 0, nil
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil || !os.IsNotExist(err)
+}
+
+func symlinkTarget(path string) (string, error) {
+	return os.Readlink(path)
+}
+
+// hashFile generates a SHA-256 hash for the given file.
+func hashFile(path string) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("error opening file %s: %v", path, err)
+	}
+	defer file.Close()
+
+	hash := sha256.New()
+	_, err = io.Copy(hash, file)
+	if err != nil {
+		return nil, fmt.Errorf("error reading file %s: %v", path, err)
+	}
+
+	return hash.Sum(nil), nil
+}
+
+// compareFileHashes compares the hashes of two files.
+func compareFileHashes(file1, file2 string) (bool, error) {
+	hash1, err := hashFile(file1)
+	if err != nil {
+		return false, err
+	}
+
+	hash2, err := hashFile(file2)
+	if err != nil {
+		return false, err
+	}
+
+	// Compare the hashes
+	return !bytes.Equal(hash1, hash2), nil
+}
+
+type Stats struct {
+	Linked            int
+	Unlinked          int
+	SameContents      int
+	DifferentContents int
+	IncorrectSymlink  int
+	NoTarget          int
+	Ignored           int
+}
+
 func gatherStats(sourceDir string, targetDir string, ignore []string) (Stats, error) {
 	stats := Stats{}
 
-	err := filepath.Walk(sourceDir, func(path string, info os.FileInfo, err error) error {
+	err := filepath.Walk(sourceDir, func(sourcePath string, info os.FileInfo, err error) error {
+
 		if err != nil {
-			fmt.Printf("Error walking directory %s: %v\n", path, err)
+			fmt.Printf("Error walking directory %s: %v\n", sourcePath, err)
 			return err
 		}
 
-		relPath, _ := filepath.Rel(sourceDir, path)
-		dest := filepath.Join(targetDir, relPath)
+		relPath, _ := filepath.Rel(sourceDir, sourcePath)
+		targetPath := filepath.Join(targetDir, relPath)
 
-		// Skip directories
-		if info.IsDir() {
-			for _, pattern := range ignore {
-				matched, err := filepath.Match(pattern, info.Name())
-				if err != nil {
-					return fmt.Errorf("error matching pattern %s: %v", pattern, err)
-				}
-				if matched {
-					fmt.Printf("Skipping directory: %s\n", info.Name())
-					return filepath.SkipDir // Skip walking into the directory
-				}
+		shouldIgnore, err := ignoreName(info.Name(), ignore)
+		if err != nil {
+			return fmt.Errorf("error checking ignore patterns: %v", err)
+		}
+
+		if shouldIgnore {
+			if info.IsDir() {
+				return filepath.SkipDir // Skip walking into the directory
+			} else {
+				stats.Ignored++
+				return nil // Continue walking without processing this file
 			}
+		}
 
+		// Skip other directories
+		if info.IsDir() {
 			return nil
 		}
 
-		fmt.Printf("Checking symlink: %s\n", dest)
+		// Check if the target path exists for this source
+		if !fileExists(targetPath) {
+			stats.NoTarget++
+			stats.Unlinked++
+			return nil
+		}
 
-		// Check for symlink
-		fmt.Printf("Checking file: %s\n", dest)
-		destInfo, err := os.Lstat(dest)
+		// Check if it is a symlink
+		isLink, err := isSymlink(targetPath)
 		if err != nil {
 			stats.Unlinked++
 			return nil
 		}
 
-		if destInfo.Mode()&os.ModeSymlink != 0 {
-			linkTarget, err := os.Readlink(dest)
-			if err == nil && filepath.Clean(linkTarget) == filepath.Clean(path) {
-				stats.Linked++
+		if !isLink {
+			different, err := compareFileHashes(sourcePath, targetPath)
+			if err != nil {
+				fmt.Printf("Error comparing files: %v\n", err)
+			} else if different {
+				stats.DifferentContents++
 			} else {
-				stats.Unlinked++
+				stats.SameContents++
 			}
+			stats.Unlinked++
+			return nil
+		}
+
+		// Target is a symlink, check if it is linked to the source
+		linkedTarget, err := os.Readlink(targetPath)
+		if err != nil {
+			return fmt.Errorf("error reading symlink: %v", err)
+		}
+
+		correctSource := expandPath(linkedTarget) == expandPath(sourcePath)
+		if correctSource {
+			stats.Linked++
 		} else {
+			stats.IncorrectSymlink++
 			stats.Unlinked++
 		}
 
@@ -196,6 +292,22 @@ func gatherStats(sourceDir string, targetDir string, ignore []string) (Stats, er
 type Args struct {
 	Command    string `arg:"positional,required" help:"command to run (link, unstow, stats)"`
 	ConfigFile string `arg:"-c,--config" help:"path to config file" default:"gostow.toml"`
+}
+
+func areDirsValid(sourceDir, targetDir string) bool {
+	// Check if sourceDir and targetDir exist and are directories
+	sourceInfo, err := os.Stat(sourceDir)
+	if err != nil || !sourceInfo.IsDir() {
+		return false
+	}
+
+	targetInfo, err := os.Stat(targetDir)
+	if err != nil || !targetInfo.IsDir() {
+		return false
+	}
+
+	// Check if the directories are the same
+	return sourceDir != targetDir
 }
 
 func main() {
@@ -216,6 +328,10 @@ func main() {
 
 	sourceDir := expandPath(cfg.Defaults.SourceDir)
 	targetDir := expandPath(cfg.Defaults.TargetDir)
+	if !areDirsValid(sourceDir, targetDir) {
+		fmt.Println("Target or source is bad.")
+		return
+	}
 
 	switch args.Command {
 	case "link":
@@ -231,9 +347,14 @@ func main() {
 		if err != nil {
 			log.Fatalf("Error gathering stats: %v", err)
 		}
-		fmt.Printf("Linked files:   %s\n", green(stats.Linked))
-		fmt.Printf("Unlinked files:	%s\n", red(stats.Unlinked))
-		fmt.Printf("Ignored files:  %s\n", blue(stats.Ignored))
+		fmt.Printf("Linked files    %s\n", green(stats.Linked))
+		fmt.Printf("Unlinked files  %s\n", red(stats.Unlinked))
+		fmt.Printf("    Target does not exist                  %s\n", red(stats.NoTarget))
+		fmt.Printf("    Target does not point to source        %s\n", red(stats.IncorrectSymlink))
+		fmt.Printf("    Target exists with same content        %s\n", red(stats.SameContents))
+		fmt.Printf("    Target exists with different content   %s\n", red(stats.DifferentContents))
+
+		fmt.Printf("Ignored files	%s\n", blue(stats.Ignored))
 
 	default:
 		fmt.Println("Unknown command:", args.Command)
