@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
+	"github.com/fatih/color"
 )
 
 type Config struct {
@@ -74,10 +75,13 @@ func createSymlink(source, dest string, force, createDirs bool) error {
 
 // Ask for confirmation from the user
 func askForConfirmation(prompt string) bool {
-	fmt.Printf("%s [y/N]: ", prompt)
+	bold := color.New(color.Bold).SprintFunc()
+	fmt.Printf("%s [y/%s]: ", prompt, bold("N"))
+
 	reader := bufio.NewReader(os.Stdin)
 	answer, _ := reader.ReadString('\n')
 	answer = strings.ToLower(strings.TrimSpace(answer))
+
 	return answer == "y"
 }
 
@@ -100,7 +104,9 @@ func createSymlinks(sourceDir, targetDir string, force, createDirs, confirm bool
 		source = expandPath(source)
 
 		// Ask for confirmation if needed
-		if confirm && !askForConfirmation(fmt.Sprintf("Are you sure you want to link %s to %s?", source, dest)) {
+		blue := color.New(color.FgBlue).SprintFunc()
+		link := blue(fmt.Sprintf("%s -> %s", source, dest))
+		if confirm && !askForConfirmation(fmt.Sprintf("Link %s?", link)) {
 			return nil
 		}
 
