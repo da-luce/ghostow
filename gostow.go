@@ -200,6 +200,38 @@ func compareFileHashes(file1, file2 string) (bool, error) {
 	return !bytes.Equal(hash1, hash2), nil
 }
 
+func readFileLines(filePath string, ignoreBlank bool) ([]string, error) {
+	var lines []string
+
+	// Open the file
+	file, err := os.Open(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("could not open file: %v", err)
+	}
+	defer file.Close()
+
+	// Create a scanner to read the file line by line
+	scanner := bufio.NewScanner(file)
+	for scanner.Scan() {
+		line := scanner.Text()
+
+		// Ignore blank lines if the flag is set
+		if ignoreBlank && line == "" {
+			continue
+		}
+
+		// Append the line (whether it's blank or not based on the flag)
+		lines = append(lines, line)
+	}
+
+	// Check for scanning errors
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("error reading file: %v", err)
+	}
+
+	return lines, nil
+}
+
 type Stats struct {
 	Linked            int
 	Unlinked          int
@@ -315,15 +347,12 @@ func main() {
 	arg.MustParse(&args)
 
 	// Load config
-	var cfg Config = defaultConfig // Start with the default configuration
-	// Check if the config file exists
-	if _, err := os.Stat(args.ConfigFile); err == nil {
-		// If the file exists, parse it
-		if _, err := toml.DecodeFile(args.ConfigFile, &cfg); err != nil {
-			log.Fatalf("Failed to parse config: %v", err)
-		}
-	} else {
+	var cfg Config = defaultConfig
+	if !fileExists(args.ConfigFile) {
 		fmt.Printf("No config file found at %s. Using default config.\n", args.ConfigFile)
+	}
+	if _, err := toml.DecodeFile(args.ConfigFile, &cfg); err != nil {
+		log.Fatalf("Failed to parse config: %v", err)
 	}
 
 	sourceDir := expandPath(cfg.Defaults.SourceDir)
@@ -331,6 +360,18 @@ func main() {
 	if !areDirsValid(sourceDir, targetDir) {
 		fmt.Println("Target or source is bad.")
 		return
+	}
+
+	ignoreFile := ".gostowignore"
+	ignoreBlank := true
+	if fileExists(ignoreFile) {
+		additionalIgnores, err := readFileLines(ignoreFile, ignoreBlank)
+		if err != nil {
+			fmt.Printf("Error reading %s: %v\n", ignoreFile, err)
+			return
+		}
+		cfg.Defaults.Ignore = append(cfg.Defaults.Ignore, additionalIgnores...)
+		log.Println("Adding additional ignores:", additionalIgnores)
 	}
 
 	switch args.Command {
