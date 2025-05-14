@@ -90,6 +90,14 @@ func askForConfirmation(prompt string) bool {
 	return answer == "y"
 }
 
+func isSymlink(path string) (bool, error) {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return false, err
+	}
+	return info.Mode()&os.ModeSymlink != 0, nil
+}
+
 // Walk the source directory and process symlinks
 func createSymlinks(sourceDir, targetDir string, force, createDirs, confirm bool) error {
 	// Walk the source directory
@@ -125,6 +133,43 @@ func createSymlinks(sourceDir, targetDir string, force, createDirs, confirm bool
 	return err
 }
 
+// Walk the target directory and remove symlinks
+func removeSymlinks(sourceDir, targetDir string, confirm bool) error {
+	// Walk the target directory
+	err := filepath.Walk(targetDir, func(target string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		// Skip non-symlink files (we only want symlinks)
+		if info.Mode()&os.ModeSymlink == 0 {
+			return nil
+		}
+
+		// Build the relative path from the target directory
+		relativePath, _ := filepath.Rel(targetDir, target)
+		source := expandPath(filepath.Join(sourceDir, relativePath)) // Construct source path
+
+		// Ask for confirmation if needed
+		blue := color.New(color.FgBlue).SprintFunc()
+		link := blue(fmt.Sprintf("%s -> %s", source, target))
+		if confirm && !askForConfirmation(fmt.Sprintf("Remove symlink %s?", link)) {
+			return nil
+		}
+
+		// Remove the symlink
+		if err := os.Remove(target); err != nil {
+			log.Printf("Error removing symlink for %s: %v", target, err)
+		} else {
+			log.Printf("Removed symlink: %s", target)
+		}
+
+		return nil
+	})
+
+	return err
+}
+
 // contains checks if the ignore list contains the given file/directory path
 func contains(ignoreList []string, path string) bool {
 	for _, ignorePath := range ignoreList {
@@ -150,17 +195,11 @@ func ignoreName(name string, ignore []string) (bool, error) {
 	return false, nil
 }
 
-func isSymlink(path string) (bool, error) {
-	info, err := os.Lstat(path)
-	if err != nil {
-		return false, err
-	}
-	return info.Mode()&os.ModeSymlink != 0, nil
-}
-
+// True if symlink too!
 func fileExists(path string) bool {
-	_, err := os.Stat(path)
-	return err == nil || !os.IsNotExist(err)
+	// Use os.Lstat to get the status of the file, even if it's a symlink
+	info, err := os.Lstat(path)
+	return err == nil && (info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0)
 }
 
 func symlinkTarget(path string) (string, error) {
@@ -275,6 +314,7 @@ func gatherStats(sourceDir string, targetDir string, ignore []string) (Stats, er
 		}
 
 		// Check if the target path exists for this source
+		// IMPORTANT: returns if a symlink!
 		if !fileExists(targetPath) {
 			stats.NoTarget++
 			stats.Unlinked++
@@ -378,6 +418,11 @@ func main() {
 	case "link":
 		if err := createSymlinks(sourceDir, targetDir, cfg.Defaults.Force, cfg.Defaults.CreateDirs, cfg.Defaults.Confirm); err != nil {
 			log.Fatalf("Error linking: %v", err)
+		}
+
+	case "unlink":
+		if err := removeSymlinks(sourceDir, targetDir, cfg.Defaults.Force); err != nil {
+			log.Fatalf("Error unlinking: %v", err)
 		}
 
 	case "stats":
