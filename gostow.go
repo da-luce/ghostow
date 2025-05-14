@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
+	"github.com/alexflint/go-arg"
 	"github.com/fatih/color"
 )
 
@@ -120,33 +121,94 @@ func createSymlinks(sourceDir, targetDir string, force, createDirs, confirm bool
 	return err
 }
 
-func main() {
-	// Look for a config file in the current directory
-	var configFile string
-	if _, err := os.Stat("gostow.toml"); err == nil {
-		configFile = "gostow.toml"
-	} else {
-		fmt.Println("No gostow.toml file found, using default settings.")
-	}
+type Stats struct {
+	Linked   int
+	Unlinked int
+	Ignored  int
+}
 
+func gatherStats(sourceDir, targetDir string) (Stats, error) {
+	stats := Stats{}
+
+	err := filepath.Walk(sourceDir, func(source string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		relPath, _ := filepath.Rel(sourceDir, source)
+		dest := filepath.Join(targetDir, relPath)
+
+		// Skip directories — considered "ignored"
+		if info.IsDir() {
+			stats.Ignored++
+			return nil
+		}
+
+		// Check for symlink
+		destInfo, err := os.Lstat(dest)
+		if err != nil {
+			stats.Unlinked++
+			return nil
+		}
+
+		if destInfo.Mode()&os.ModeSymlink != 0 {
+			linkTarget, err := os.Readlink(dest)
+			if err == nil && filepath.Clean(linkTarget) == filepath.Clean(source) {
+				stats.Linked++
+			} else {
+				stats.Unlinked++
+			}
+		} else {
+			stats.Unlinked++
+		}
+
+		return nil
+	})
+
+	return stats, err
+}
+
+type Args struct {
+	Command    string `arg:"positional,required" help:"command to run (link, unstow, stats)"`
+	ConfigFile string `arg:"-c,--config" help:"path to config file" default:"gostow.toml"`
+}
+
+func main() {
+	var args Args
+	arg.MustParse(&args)
+
+	// Load config
 	var cfg Config
-	if configFile != "" {
-		// Load the TOML config if the file exists
-		if _, err := toml.DecodeFile(configFile, &cfg); err != nil {
+	if _, err := os.Stat(args.ConfigFile); err == nil {
+		if _, err := toml.DecodeFile(args.ConfigFile, &cfg); err != nil {
 			log.Fatalf("Failed to parse config: %v", err)
 		}
 	} else {
-		// Use default config if no config file exists
+		fmt.Printf("No config file found at %s. Using default config.\n", args.ConfigFile)
 		cfg = defaultConfig
 	}
 
-	// Expand the target directory path
 	sourceDir := expandPath(cfg.Defaults.SourceDir)
 	targetDir := expandPath(cfg.Defaults.TargetDir)
 
-	// Walk through the source directory and create symlinks
-	err := createSymlinks(sourceDir, targetDir, cfg.Defaults.Force, cfg.Defaults.CreateDirs, cfg.Defaults.Confirm)
-	if err != nil {
-		log.Fatalf("Error creating symlinks: %v", err)
+	switch args.Command {
+	case "link":
+		if err := createSymlinks(sourceDir, targetDir, cfg.Defaults.Force, cfg.Defaults.CreateDirs, cfg.Defaults.Confirm); err != nil {
+			log.Fatalf("Error linking: %v", err)
+		}
+
+	case "stats":
+		green := color.New(color.FgGreen).SprintFunc()
+		red := color.New(color.FgRed).SprintFunc()
+		blue := color.New(color.FgBlue).SprintFunc()
+		stats, err := gatherStats(sourceDir, targetDir)
+		if err != nil {
+			log.Fatalf("Error gathering stats: %v", err)
+		}
+		fmt.Printf("Linked files:   %s\n", green(stats.Linked))
+		fmt.Printf("Unlinked files:	%s\n", red(stats.Unlinked))
+		fmt.Printf("Ignored files:  %s\n", blue(stats.Ignored))
+
+	default:
+		fmt.Println("Unknown command:", args.Command)
 	}
 }
