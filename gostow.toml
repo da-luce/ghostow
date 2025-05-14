@@ -1,9 +1,9 @@
 [defaults]
-confirm = true      # Add confirmation on CLI
-force = false       # If the target location already exists, don't overwrite it
-create_dirs = true  # If the directory doesn't exist, create it
-source_dir = "./test"
-target_dir = "./test_src"    # Default directory to link things to
+confirm = true              # Add confirmation on CLI
+force = false               # If the target location already exists, don't overwrite it
+create_dirs = true          # If the directory doesn't exist, create it
+# source_dir = "."
+target_dir = "./test_src"   # Default directory to link things to
 
 # Custom links provide a way to override the structure of your source directory
 [exceptions]
