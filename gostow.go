@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -18,11 +19,11 @@ import (
 )
 
 type Config struct {
-	Defaults Defaults          `toml:"defaults"`
-	Links    map[string]string `toml:"exceptions"` // Custom exceptions as source -> target mappings
+	Options Options           `toml:"options"`
+	Links   map[string]string `toml:"exceptions"` // Custom exceptions as source -> target mappings
 }
 
-type Defaults struct {
+type Options struct {
 	Confirm    bool     `toml:"confirm"`
 	Force      bool     `toml:"force"`
 	CreateDirs bool     `toml:"create_dirs"`
@@ -33,7 +34,7 @@ type Defaults struct {
 
 // Default configuration to fall back on if no config file is found
 var defaultConfig = Config{
-	Defaults: Defaults{
+	Options: Options{
 		Confirm:    true,
 		Force:      false,
 		CreateDirs: true,
@@ -98,6 +99,54 @@ func isSymlink(path string) (bool, error) {
 	return info.Mode()&os.ModeSymlink != 0, nil
 }
 
+var ansiRegex = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+
+func stripANSI(str string) string {
+	return ansiRegex.ReplaceAllString(str, "")
+}
+
+func linkString(source string, dest string) string {
+	blue := color.New(color.FgBlue).SprintFunc()
+	return blue(fmt.Sprintf("%s → %s", source, dest))
+}
+
+func printDotTable(rows [][2]string) {
+	// Find the max length of the left column
+	maxLeftLen := 0
+	for _, row := range rows {
+		if len(row[0]) > maxLeftLen {
+			maxLeftLen = len(row[0])
+		}
+	}
+
+	maxRightLen := 0
+	for _, row := range rows {
+		if len(stripANSI(row[1])) > maxRightLen {
+			maxRightLen = len(stripANSI(row[1]))
+		}
+	}
+
+	spacingLeft := 1
+	spacingRight := 1
+	extraDots := 5
+
+	totalPadding := spacingLeft + spacingRight + extraDots
+
+	divider := strings.Repeat("⎯", maxLeftLen+totalPadding+maxRightLen)
+	fmt.Println(divider)
+
+	// Print each row with dynamic dots
+	leftSpace := strings.Repeat(" ", spacingLeft)
+	rightSpace := strings.Repeat(" ", spacingRight)
+	for _, row := range rows {
+		left, right := row[0], row[1]
+		numDots := maxLeftLen - len(left) + extraDots
+		dots := strings.Repeat(".", numDots)
+		fmt.Printf("%s%s%s%s%s\n", left, leftSpace, dots, rightSpace, right)
+	}
+	fmt.Println(divider)
+}
+
 // Walk the source directory and process symlinks
 func createSymlinks(sourceDir, targetDir string, force, createDirs, confirm bool) error {
 	// Walk the source directory
@@ -117,9 +166,7 @@ func createSymlinks(sourceDir, targetDir string, force, createDirs, confirm bool
 		source = expandPath(source)
 
 		// Ask for confirmation if needed
-		blue := color.New(color.FgBlue).SprintFunc()
-		link := blue(fmt.Sprintf("%s -> %s", source, dest))
-		if confirm && !askForConfirmation(fmt.Sprintf("Link %s?", link)) {
+		if confirm && !askForConfirmation(linkString(source, dest)) {
 			return nil
 		}
 
@@ -364,6 +411,8 @@ func gatherStats(sourceDir string, targetDir string, ignore []string) (Stats, er
 type Args struct {
 	Command    string `arg:"positional,required" help:"command to run (link, unstow, stats)"`
 	ConfigFile string `arg:"-c,--config" help:"path to config file" default:"gostow.toml"`
+	TargetDir  string `arg:"-t,--target" help:"Override target directory"`
+	SourceDir  string `arg:"-s,--source" help:"Override source directory"`
 }
 
 func areDirsValid(sourceDir, targetDir string) bool {
@@ -389,14 +438,23 @@ func main() {
 	// Load config
 	var cfg Config = defaultConfig
 	if !fileExists(args.ConfigFile) {
-		fmt.Printf("No config file found at %s. Using default config.\n", args.ConfigFile)
-	}
-	if _, err := toml.DecodeFile(args.ConfigFile, &cfg); err != nil {
-		log.Fatalf("Failed to parse config: %v", err)
+		log.Printf("No config file found at %s. Using default config.\n", args.ConfigFile)
+	} else {
+		if _, err := toml.DecodeFile(args.ConfigFile, &cfg); err != nil {
+			log.Fatalf("Failed to parse config: %v", err)
+		}
 	}
 
-	sourceDir := expandPath(cfg.Defaults.SourceDir)
-	targetDir := expandPath(cfg.Defaults.TargetDir)
+	// Expand and override source/target dirs from CLI args if provided
+	if args.SourceDir != "" {
+		cfg.Options.SourceDir = args.SourceDir
+	}
+	if args.TargetDir != "" {
+		cfg.Options.TargetDir = args.TargetDir
+	}
+
+	sourceDir := expandPath(cfg.Options.SourceDir)
+	targetDir := expandPath(cfg.Options.TargetDir)
 	if !areDirsValid(sourceDir, targetDir) {
 		fmt.Println("Target or source is bad.")
 		return
@@ -410,18 +468,18 @@ func main() {
 			fmt.Printf("Error reading %s: %v\n", ignoreFile, err)
 			return
 		}
-		cfg.Defaults.Ignore = append(cfg.Defaults.Ignore, additionalIgnores...)
+		cfg.Options.Ignore = append(cfg.Options.Ignore, additionalIgnores...)
 		log.Println("Adding additional ignores:", additionalIgnores)
 	}
 
 	switch args.Command {
 	case "link":
-		if err := createSymlinks(sourceDir, targetDir, cfg.Defaults.Force, cfg.Defaults.CreateDirs, cfg.Defaults.Confirm); err != nil {
+		if err := createSymlinks(sourceDir, targetDir, cfg.Options.Force, cfg.Options.CreateDirs, cfg.Options.Confirm); err != nil {
 			log.Fatalf("Error linking: %v", err)
 		}
 
 	case "unlink":
-		if err := removeSymlinks(sourceDir, targetDir, cfg.Defaults.Force); err != nil {
+		if err := removeSymlinks(sourceDir, targetDir, cfg.Options.Force); err != nil {
 			log.Fatalf("Error unlinking: %v", err)
 		}
 
@@ -429,18 +487,21 @@ func main() {
 		green := color.New(color.FgGreen).SprintFunc()
 		red := color.New(color.FgRed).SprintFunc()
 		blue := color.New(color.FgBlue).SprintFunc()
-		stats, err := gatherStats(sourceDir, targetDir, cfg.Defaults.Ignore)
+		stats, err := gatherStats(sourceDir, targetDir, cfg.Options.Ignore)
 		if err != nil {
 			log.Fatalf("Error gathering stats: %v", err)
 		}
-		fmt.Printf("Linked files    %s\n", green(stats.Linked))
-		fmt.Printf("Unlinked files  %s\n", red(stats.Unlinked))
-		fmt.Printf("    Target does not exist                  %s\n", red(stats.NoTarget))
-		fmt.Printf("    Target does not point to source        %s\n", red(stats.IncorrectSymlink))
-		fmt.Printf("    Target exists with same content        %s\n", red(stats.SameContents))
-		fmt.Printf("    Target exists with different content   %s\n", red(stats.DifferentContents))
-
-		fmt.Printf("Ignored files	%s\n", blue(stats.Ignored))
+		fmt.Printf("Displaying for statistics linking %s\n\n", linkString(sourceDir, targetDir))
+		rows := [][2]string{
+			{"Linked files", green(stats.Linked)},
+			{"Unlinked files", red(stats.Unlinked)},
+			{"    Target does not exist", red(stats.NoTarget)},
+			{"    Target does not point to source", red(stats.IncorrectSymlink)},
+			{"    Target exists with same content", red(stats.SameContents)},
+			{"    Target exists with different content", red(stats.DifferentContents)},
+			{"Ignored files", blue(stats.Ignored)},
+		}
+		printDotTable(rows)
 
 	default:
 		fmt.Println("Unknown command:", args.Command)

@@ -1,4 +1,4 @@
-[defaults]
+[options]
 confirm = true              # Add confirmation on CLI
 force = false               # If the target location already exists, don't overwrite it
 create_dirs = true          # If the directory doesn't exist, create it

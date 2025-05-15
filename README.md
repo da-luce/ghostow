@@ -1,6 +1,6 @@
 # gostow
 
-gostow is a modern replacement for GNU Stow, built in Go, with additional features.
+gostow is a modern alternative to [GNU Stow](https://www.gnu.org/software/stow/), built in Go, with additional features.
 
 Much like with stow, there are two primary directories involved:
 
@@ -16,7 +16,7 @@ Much like with stow, there are two primary directories involved:
 Here are the default settings for a `gostow.toml` configuration file:
 
 ```toml
-[defaults]
+[options]
 confirm = false     # Disable confirmation prompt in the CLI (set to true for confirmation before actions).
 force = false       # If set to true, existing files in the target directory will be overwritten without prompt.
 create_dirs = true  # If set to true, automatically create any missing directories in the target path.
