@@ -1,4 +1,4 @@
-module gostow
+module ghostow
 
 go 1.21.4
 

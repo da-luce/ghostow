@@ -1,17 +1,17 @@
-# gostow
+# ghostow
 
-gostow is a modern alternative to [GNU Stow](https://www.gnu.org/software/stow/), built in Go, with additional features.
+ghostow is a modern alternative to [GNU Stow](https://www.gnu.org/software/stow/), built in Go, with additional features.
 
 Much like with stow, there are two primary directories involved:
 
-* Source Directory: This is the directory where your files (such as configuration files, scripts, etc.) reside. A `gostow.toml` file must be present to document the fact that Gostow is managing this directory.
+* Source Directory: This is the directory where your files (such as configuration files, scripts, etc.) reside. A `ghostow.toml` file must be present to document the fact that `ghostow` is managing this directory.
 * Target Directory: This is where the symlinks will point to. The files in the target directory are what the symlinks in the source directory will reference.
 
 | **Command** | **Description**                                                        |
 | ----------- | ---------------------------------------------------------------------- |
-| `link`      | Creates symlinks in the target directory, pointing back to the source. |
-| `unlink`    | Removes symlinks in the target directory.                              |
-| `stats`     | Displays statistics about the current symlinks and their statuses.     |
+| `gstow link`      | Creates symlinks in the target directory, pointing back to the source. |
+| `gstow unlink`    | Removes symlinks in the target directory.                              |
+| `gstow stats`     | Displays statistics about the current symlinks and their statuses.     |
 
 Here are the default settings for a `gostow.toml` configuration file:
 

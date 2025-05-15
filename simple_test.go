@@ -1,6 +1,7 @@
 package main
 
 import (
+	"ghostow/fileutil"
 	"os"
 	"path/filepath"
 	"testing"
@@ -22,7 +23,7 @@ func TestExpandPath(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.path, func(t *testing.T) {
-			result := expandPath(tt.path)
+			result := fileutil.ExpandPath(tt.path)
 			assert.Equal(t, tt.expected, result)
 		})
 	}
@@ -41,13 +42,13 @@ func TestCreateSymlink(t *testing.T) {
 	defer os.Remove(source)
 
 	// Test symlink creation
-	err = createSymlink(source, dest, true, true)
+	err = fileutil.CreateSymlink(source, dest, true, true)
 	assert.NoError(t, err)
 
 	// Check if symlink exists
 	_, err = os.Lstat(dest)
 	assert.NoError(t, err)
-	isLink, err := isSymlink(dest)
+	isLink := fileutil.IsSymlink(dest)
 	assert.NoError(t, err)
 	assert.True(t, isLink)
 
@@ -75,7 +76,7 @@ func TestIsSymlink(t *testing.T) {
 	defer os.Remove(dest)
 
 	// Test if it's a symlink
-	isLink, err := isSymlink(dest)
+	isLink := fileutil.IsSymlink(dest)
 	assert.NoError(t, err)
 	assert.True(t, isLink)
 }
@@ -92,11 +93,11 @@ func TestFileExists(t *testing.T) {
 	defer os.Remove(source)
 
 	// Test file exists
-	exists := fileExists(source)
+	exists := fileutil.IsRegularFile(source)
 	assert.True(t, exists)
 
 	// Test file does not exist
-	exists = fileExists("./non_existent.txt")
+	exists = fileutil.IsRegularFile("./non_existent.txt")
 	assert.False(t, exists)
 }
 
