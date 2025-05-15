@@ -120,88 +120,63 @@ func walkSourceDir(sourceDir string, ignoreList []string, handler func(source st
 
 // Walk the source directory and process symlinks
 func createSymlinks(sourceDir, targetDir string, force, createDirs, confirm bool, ignoreList []string) error {
-	// Walk the source directory
-	err := filepath.Walk(sourceDir, func(source string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
 
-		// Skip ignores
-		shouldIgnore, err := fileutil.MatchesPatterns(info.Name(), ignoreList)
-		if err != nil {
-			return fmt.Errorf("error checking ignore patterns: %v", err)
-		}
-		if shouldIgnore {
-			if info.IsDir() {
-				return filepath.SkipDir // Skip walking into the directory
-			} else {
-				return nil // Continue walking without processing this file
-			}
-		}
+	// Ensure sourceDir and targetDir are valid
+	if !filepath.IsAbs(sourceDir) {
+		return fmt.Errorf("walkSourceDir: expected absolute path, got: %s", sourceDir)
+	}
+	if !filepath.IsAbs(targetDir) {
+		return fmt.Errorf("walkSourceDir: expected absolute path, got: %s", sourceDir)
+	}
 
-		// Build the relative path from the source directory
-		relativePath, _ := filepath.Rel(sourceDir, source)
-		destAbs := fileutil.ExpandPath(filepath.Join(targetDir, relativePath))
-		source = fileutil.ExpandPath(source)
-		sourceAbs, err := filepath.Abs(source)
+	err := walkSourceDir(sourceDir, ignoreList, func(sourceAbs string, info os.FileInfo, sourceRel string) error {
 
-		if relativePath == "." {
-			// This is the top-level source directory itself, skip linking it
-			// Just continue walking inside it
-			return nil
-		}
+		targetAbs := filepath.Join(targetDir, sourceRel)
 
-		if fileutil.PathExists(destAbs) {
-			log.Printf("Path dest already exists %s", destAbs)
-			linked, err := fileutil.IsSymlinkPointingTo(destAbs, sourceAbs)
+		// If target exists, check if it's already a correct symlink
+		green := color.New(color.FgGreen).SprintFunc()
+		if fileutil.PathExists(targetAbs) {
+			log.Printf("Target already exists: %s", targetAbs)
+			linked, err := fileutil.IsSymlinkPointingTo(targetAbs, sourceAbs)
 			if err != nil {
-				log.Printf("Error checking symlink for %s: %v", destAbs, err)
+				log.Printf("Failed to verify symlink %ss: %v", linkString(targetAbs, sourceAbs), err)
 			} else if linked {
-				log.Printf("Link already exists for %s -> %s", destAbs, sourceAbs)
-				return nil // skip creating link again
+				log.Printf("%s%s", green("Correct symlink already exists: "), linkString(targetAbs, sourceAbs))
+				return nil // Skip relinking
+			}
+		}
+
+		// Check if there is an existing symlink or file
+		log.Printf("No link exists for %s", linkString(targetAbs, sourceAbs))
+		if fileutil.PathExists(targetAbs) {
+			if force {
+				if err := os.RemoveAll(targetAbs); err != nil {
+					return fmt.Errorf("failed to remove existing file %s: %w", targetAbs, err)
+				}
 			} else {
-				log.Printf("No link exists for %s -> %s", destAbs, sourceAbs)
-			}
-
-			// Ask for confirmation if needed
-			if confirm && !stringutil.AskForConfirmation(linkString(sourceAbs, destAbs)) {
-				return nil
-			}
-
-			// Remove the existing symlink or file if needed
-			if fileutil.PathExists(destAbs) {
-				if force {
-					if err := os.RemoveAll(destAbs); err != nil {
-						return fmt.Errorf("failed to remove existing file %s: %w", destAbs, err)
+				if stringutil.AskForConfirmation("Preview diff of existing file at " + targetAbs + "?") {
+					PreviewDiff(sourceAbs, targetAbs)
+				}
+				if stringutil.AskForConfirmation("Delete existing file at " + targetAbs + "?") {
+					if err := os.RemoveAll(targetAbs); err != nil {
+						return fmt.Errorf("failed to remove existing file %s: %w", targetAbs, err)
 					}
 				} else {
-					if stringutil.AskForConfirmation("Preview diff of existing file at " + destAbs + "?") {
-						PreviewDiff(source, destAbs)
-					}
-					if stringutil.AskForConfirmation("Delete existing file at " + destAbs + "?") {
-						if err := os.RemoveAll(destAbs); err != nil {
-							return fmt.Errorf("failed to remove existing file %s: %w", destAbs, err)
-						}
-					} else {
-						fmt.Printf("Skipped: %s\n", destAbs)
-						return nil
-					}
+					fmt.Printf("Skipped: %s\n", targetAbs)
+					return nil
 				}
 			}
 		} else {
-			log.Printf("Path does not exist %s", destAbs)
+			log.Printf("Target path does not exist: %s", targetAbs)
 		}
 
 		// Create the symlink
-		if err := fileutil.CreateSymlink(sourceAbs, destAbs, createDirs); err != nil {
-			log.Printf("Error creating symlink for %s: %v", source, err)
+		if err := fileutil.CreateSymlink(sourceAbs, targetAbs, createDirs); err != nil {
+			log.Printf("Error creating symlink %s: %v", linkString(sourceAbs, targetAbs), err)
 		} else {
-			fmt.Printf("Linked %s -> %s\n", sourceAbs, destAbs)
+			log.Printf("Linked %s\n", linkString(sourceAbs, targetAbs))
 		}
 
-		if info.IsDir() {
-			return filepath.SkipDir // Skip walking into the directory
-		}
 		return nil
 	})
 
@@ -226,9 +201,7 @@ func removeSymlinks(sourceDir, targetDir string, confirm bool) error {
 		source := fileutil.ExpandPath(filepath.Join(sourceDir, relativePath)) // Construct source path
 
 		// Ask for confirmation if needed
-		blue := color.New(color.FgBlue).SprintFunc()
-		link := blue(fmt.Sprintf("%s -> %s", source, target))
-		if confirm && !stringutil.AskForConfirmation(fmt.Sprintf("Remove symlink %s?", link)) {
+		if confirm && !stringutil.AskForConfirmation(fmt.Sprintf("Remove symlink %s?", linkString(source, target))) {
 			return nil
 		}
 
@@ -424,12 +397,12 @@ func main() {
 	// Handle arguments
 	switch args.Command {
 	case "link":
-		if err := createSymlinks(sourceDir, targetDir, cfg.Options.Force, cfg.Options.CreateDirs, cfg.Options.Confirm, cfg.Options.Ignore); err != nil {
+		if err := createSymlinks(sourceDirAbs, targetDir, cfg.Options.Force, cfg.Options.CreateDirs, cfg.Options.Confirm, cfg.Options.Ignore); err != nil {
 			log.Fatalf("Error linking: %v", err)
 		}
 
 	case "unlink":
-		if err := removeSymlinks(sourceDir, targetDir, cfg.Options.Force); err != nil {
+		if err := removeSymlinks(sourceDirAbs, targetDir, cfg.Options.Force); err != nil {
 			log.Fatalf("Error unlinking: %v", err)
 		}
 
