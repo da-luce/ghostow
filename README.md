@@ -13,7 +13,7 @@ Much like with stow, there are two primary directories involved:
 | `gstow unlink`    | Removes symlinks in the target directory.                              |
 | `gstow stats`     | Displays statistics about the current symlinks and their statuses.     |
 
-Here are the default settings for a `gostow.toml` configuration file:
+Here are the default settings for a `ghostow.toml` configuration file:
 
 ```toml
 [options]
@@ -26,3 +26,7 @@ target_dir = "~"    # Path to the target directory where symlinks will be create
 # Custom links allow you to specify exceptions or modify the structure of the source directory.
 [exceptions]
 ```
+
+## TODO
+
+- [ ] Add git diff to preview file differences

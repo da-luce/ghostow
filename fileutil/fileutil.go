@@ -154,10 +154,12 @@ func ReadFileLines(filePath string, ignoreBlank bool) ([]string, error) {
 // Create a symlink at the target location
 func CreateSymlink(source, dest string, createDirs bool) error {
 	// Ensure the target directory exists
+	dir := filepath.Dir(dest)
 	if createDirs {
-		dir := filepath.Dir(dest)
-		if err := os.MkdirAll(dir, 0755); err != nil {
-			return fmt.Errorf("failed to create directory %s: %w", dir, err)
+		if !IsDir(dir) {
+			if err := os.MkdirAll(dir, 0755); err != nil {
+				return fmt.Errorf("failed to create directory %s: %w", dir, err)
+			}
 		}
 	}
 
@@ -167,4 +169,31 @@ func CreateSymlink(source, dest string, createDirs bool) error {
 	}
 
 	return nil
+}
+
+// IsSymlinkPointingTo returns true if `path` is a symlink that points to `target`.
+// It resolves relative symlink targets to absolute paths for accurate comparison.
+func IsSymlinkPointingTo(symlink, target string) (bool, error) {
+	linkTarget, err := os.Readlink(symlink)
+	if err != nil {
+		return false, err
+	}
+
+	// Resolve absolute path of the symlink target, relative to the symlink's directory
+	symlinkDir := filepath.Dir(symlink)
+	absLinkTarget := linkTarget
+	if !filepath.IsAbs(linkTarget) {
+		absLinkTarget = filepath.Join(symlinkDir, linkTarget)
+	}
+	absLinkTarget, err = filepath.Abs(absLinkTarget)
+	if err != nil {
+		return false, err
+	}
+
+	absTarget, err := filepath.Abs(target)
+	if err != nil {
+		return false, err
+	}
+
+	return absLinkTarget == absTarget, nil
 }

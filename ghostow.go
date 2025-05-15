@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 
 	"ghostow/fileutil"
@@ -45,52 +46,97 @@ func linkString(source string, dest string) string {
 	return blue(fmt.Sprintf("%s → %s", source, dest))
 }
 
+// PreviewDiff runs git diff between two files
+func PreviewDiff(source, target string) error {
+	cmd := exec.Command("git", "--no-pager", "diff", "--color", "--no-index", source, target)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
 // Walk the source directory and process symlinks
-func createSymlinks(sourceDir, targetDir string, force, createDirs, confirm bool) error {
+func createSymlinks(sourceDir, targetDir string, force, createDirs, confirm bool, ignoreList []string) error {
 	// Walk the source directory
 	err := filepath.Walk(sourceDir, func(source string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
 		}
 
-		// Skip directories (we only want files)
-		if info.IsDir() {
-			return nil
+		// Skip ignores
+		shouldIgnore, err := fileutil.MatchesPatterns(info.Name(), ignoreList)
+		if err != nil {
+			return fmt.Errorf("error checking ignore patterns: %v", err)
+		}
+		if shouldIgnore {
+			if info.IsDir() {
+				return filepath.SkipDir // Skip walking into the directory
+			} else {
+				return nil // Continue walking without processing this file
+			}
 		}
 
 		// Build the relative path from the source directory
 		relativePath, _ := filepath.Rel(sourceDir, source)
-		dest := fileutil.ExpandPath(filepath.Join(targetDir, relativePath)) // Construct destination path
+		destAbs := fileutil.ExpandPath(filepath.Join(targetDir, relativePath))
 		source = fileutil.ExpandPath(source)
+		sourceAbs, err := filepath.Abs(source)
 
-		// Ask for confirmation if needed
-		if confirm && !stringutil.AskForConfirmation(linkString(source, dest)) {
+		if relativePath == "." {
+			// This is the top-level source directory itself, skip linking it
+			// Just continue walking inside it
 			return nil
 		}
 
-		// Remove the existing symlink or file if needed
-		if fileutil.PathExists(dest) {
-			if force {
-				if err := os.RemoveAll(dest); err != nil {
-					return fmt.Errorf("failed to remove existing file %s: %w", dest, err)
-				}
+		if fileutil.PathExists(destAbs) {
+			log.Printf("Path dest already exists %s", destAbs)
+			linked, err := fileutil.IsSymlinkPointingTo(destAbs, sourceAbs)
+			if err != nil {
+				log.Printf("Error checking symlink for %s: %v", destAbs, err)
+			} else if linked {
+				log.Printf("Link already exists for %s -> %s", destAbs, sourceAbs)
+				return nil // skip creating link again
 			} else {
-				if stringutil.AskForConfirmation("Delete existing file at " + dest + "?") {
-					if err := os.RemoveAll(dest); err != nil {
-						return fmt.Errorf("failed to remove existing file %s: %w", dest, err)
+				log.Printf("No link exists for %s -> %s", destAbs, sourceAbs)
+			}
+
+			// Ask for confirmation if needed
+			if confirm && !stringutil.AskForConfirmation(linkString(sourceAbs, destAbs)) {
+				return nil
+			}
+
+			// Remove the existing symlink or file if needed
+			if fileutil.PathExists(destAbs) {
+				if force {
+					if err := os.RemoveAll(destAbs); err != nil {
+						return fmt.Errorf("failed to remove existing file %s: %w", destAbs, err)
 					}
 				} else {
-					fmt.Printf("Skipped: %s\n", dest)
-					return nil
+					if stringutil.AskForConfirmation("Preview diff of existing file at " + destAbs + "?") {
+						PreviewDiff(source, destAbs)
+					}
+					if stringutil.AskForConfirmation("Delete existing file at " + destAbs + "?") {
+						if err := os.RemoveAll(destAbs); err != nil {
+							return fmt.Errorf("failed to remove existing file %s: %w", destAbs, err)
+						}
+					} else {
+						fmt.Printf("Skipped: %s\n", destAbs)
+						return nil
+					}
 				}
 			}
+		} else {
+			log.Printf("Path does not exist %s", destAbs)
 		}
 
 		// Create the symlink
-		if err := fileutil.CreateSymlink(source, dest, createDirs); err != nil {
+		if err := fileutil.CreateSymlink(sourceAbs, destAbs, createDirs); err != nil {
 			log.Printf("Error creating symlink for %s: %v", source, err)
 		} else {
-			fmt.Printf("Linked %s -> %s\n", source, dest)
+			fmt.Printf("Linked %s -> %s\n", sourceAbs, destAbs)
+		}
+
+		if info.IsDir() {
+			return filepath.SkipDir // Skip walking into the directory
 		}
 		return nil
 	})
@@ -319,7 +365,7 @@ func main() {
 	// Handle arguments
 	switch args.Command {
 	case "link":
-		if err := createSymlinks(sourceDir, targetDir, cfg.Options.Force, cfg.Options.CreateDirs, cfg.Options.Confirm); err != nil {
+		if err := createSymlinks(sourceDir, targetDir, cfg.Options.Force, cfg.Options.CreateDirs, cfg.Options.Confirm, cfg.Options.Ignore); err != nil {
 			log.Fatalf("Error linking: %v", err)
 		}
 
