@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"time"
 
 	"ghostow/fileutil"
 	"ghostow/stringutil"
@@ -13,6 +14,8 @@ import (
 	"github.com/BurntSushi/toml"
 	"github.com/alexflint/go-arg"
 	"github.com/fatih/color"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
 )
 
 type Config struct {
@@ -27,6 +30,7 @@ type Options struct {
 	SourceDir  string   `toml:"source_dir"`
 	TargetDir  string   `toml:"target_dir"`
 	Ignore     []string `toml:"ignore"`
+	LogLevel   string   `toml:"log_level"`
 }
 
 // Default configuration to fall back on if no config file is found
@@ -38,7 +42,35 @@ var defaultConfig = Config{
 		SourceDir:  ".",
 		TargetDir:  "~",
 		Ignore:     []string{"ghostow.toml", ".ghostowignore", "*.git"},
+		LogLevel:   "debug",
 	},
+}
+
+// Logging
+var sugar *zap.SugaredLogger
+
+func InitLogger(logLevel string) error {
+	// Create zap config independently
+	zapCfg := zap.NewProductionConfig()
+	level := zap.InfoLevel
+	if err := level.UnmarshalText([]byte(logLevel)); err != nil {
+		log.Printf("Invalid log level %q, defaulting to info", logLevel)
+	}
+	zapCfg.Level = zap.NewAtomicLevelAt(level)
+	zapCfg.Encoding = "console"
+	zapCfg.EncoderConfig.EncodeTime = func(t time.Time, enc zapcore.PrimitiveArrayEncoder) {
+		enc.AppendString(t.Format("15:04:05"))
+	}
+	zapCfg.EncoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
+	zapCfg.EncoderConfig.EncodeCaller = zapcore.ShortCallerEncoder
+	logger, err := zapCfg.Build()
+	if err != nil {
+		log.Fatalf("Failed to build logger: %v", err)
+	}
+	defer logger.Sync()
+	sugar = logger.Sugar()
+	sugar.Debug("Initialized logger.")
+	return nil
 }
 
 func linkString(source string, dest string) string {
@@ -136,18 +168,18 @@ func createSymlinks(sourceDir, targetDir string, force, createDirs, confirm bool
 		// If target exists, check if it's already a correct symlink
 		green := color.New(color.FgGreen).SprintFunc()
 		if fileutil.PathExists(targetAbs) {
-			log.Printf("Target already exists: %s", targetAbs)
+			sugar.Debugf("Target already exists: %s", targetAbs)
 			linked, err := fileutil.IsSymlinkPointingTo(targetAbs, sourceAbs)
 			if err != nil {
-				log.Printf("Failed to verify symlink %ss: %v", linkString(targetAbs, sourceAbs), err)
+				sugar.Infof("Failed to verify symlink %s: %v", linkString(targetAbs, sourceAbs), err)
 			} else if linked {
-				log.Printf("%s%s", green("Correct symlink already exists: "), linkString(targetAbs, sourceAbs))
+				sugar.Infof("%s%s", green("Correct symlink already exists: "), linkString(targetAbs, sourceAbs))
 				return nil // Skip relinking
 			}
 		}
 
 		// Check if there is an existing symlink or file
-		log.Printf("No link exists for %s", linkString(targetAbs, sourceAbs))
+		sugar.Debugf("No link exists for %s", linkString(targetAbs, sourceAbs))
 		if fileutil.PathExists(targetAbs) {
 			if force {
 				if err := os.RemoveAll(targetAbs); err != nil {
@@ -167,14 +199,14 @@ func createSymlinks(sourceDir, targetDir string, force, createDirs, confirm bool
 				}
 			}
 		} else {
-			log.Printf("Target path does not exist: %s", targetAbs)
+			sugar.Debugf("Target path does not exist: %s", targetAbs)
 		}
 
 		// Create the symlink
 		if err := fileutil.CreateSymlink(sourceAbs, targetAbs, createDirs); err != nil {
-			log.Printf("Error creating symlink %s: %v", linkString(sourceAbs, targetAbs), err)
+			sugar.Infof("Error creating symlink %s: %v", linkString(sourceAbs, targetAbs), err)
 		} else {
-			log.Printf("Linked %s\n", linkString(sourceAbs, targetAbs))
+			sugar.Infof("Linked %s", linkString(sourceAbs, targetAbs))
 		}
 
 		return nil
@@ -210,9 +242,9 @@ func removeSymlinks(sourceDir, targetDir string, ignoreList []string, confirm bo
 
 		// Remove the symlink
 		if err := os.Remove(targetAbs); err != nil {
-			log.Printf("Error removing symlink %s: %v", linkString(targetAbs, sourceAbs), err)
+			sugar.Infof("Error removing symlink %s: %v", linkString(targetAbs, sourceAbs), err)
 		} else {
-			log.Printf("Removed symlink: %s", linkString(targetAbs, sourceAbs))
+			sugar.Infof("Removed symlink: %s", linkString(targetAbs, sourceAbs))
 		}
 
 		return nil
@@ -252,7 +284,7 @@ func gatherStats(sourceDir string, targetDir string, ignoreList []string) (Stats
 		if !fileutil.PathExists(targetAbs) {
 			stats.NoTarget++
 			stats.Unlinked++
-			log.Printf("Target path %s does not exist\n", targetAbs)
+			sugar.Debugf("Target path %s does not exist\n", targetAbs)
 			return nil
 		}
 
@@ -309,7 +341,7 @@ func printStats(sourceDir string, targetDir string, ignore []string) {
 	blue := color.New(color.FgBlue).SprintFunc()
 	stats, err := gatherStats(sourceDir, targetDir, ignore)
 	if err != nil {
-		log.Fatalf("Error gathering stats: %v", err)
+		sugar.Fatalf("Error gathering stats: %v", err)
 	}
 	fmt.Printf("Displaying statistics for linking %s\n\n", linkString(sourceDir, targetDir))
 	rows := [][2]string{
@@ -335,15 +367,21 @@ func main() {
 	// Load config
 	var cfg Config = defaultConfig
 
-	// Parse config file
-	if !fileutil.IsRegularFile(args.ConfigFile) {
-		log.Printf("No config file found at %s. Using default config.\n", args.ConfigFile)
-	} else {
+	// Parse config
+	if fileutil.IsRegularFile(args.ConfigFile) {
 		if _, err := toml.DecodeFile(args.ConfigFile, &cfg); err != nil {
-			log.Fatalf("Failed to parse config: %v", err)
+			sugar.Fatalf("Failed to parse config: %v", err)
 			return
 		}
-		log.Printf("Using config at %s\n", args.ConfigFile)
+
+	}
+	InitLogger(cfg.Options.LogLevel)
+
+	// Parse config file
+	if !fileutil.IsRegularFile(args.ConfigFile) {
+		sugar.Infof("No config file found at %s. Using default config.", args.ConfigFile)
+	} else {
+		sugar.Infof("Using config at %s", args.ConfigFile)
 	}
 
 	// Expand and override source/target dirs from CLI args if provided
@@ -361,13 +399,13 @@ func main() {
 		fmt.Printf("Source directory %s not found\n", sourceDir)
 		return
 	} else {
-		log.Printf("Using source directory %s\n", sourceDir)
+		sugar.Infof("Using source directory %s", sourceDir)
 	}
 	if !fileutil.IsDir(targetDir) {
 		fmt.Printf("Target directory %s not found\n", targetDir)
 		return
 	} else {
-		log.Printf("Using target directory %s\n", targetDir)
+		sugar.Infof("Using target directory %s", targetDir)
 	}
 
 	sourceDirAbs, _ := filepath.Abs(sourceDir)
@@ -392,21 +430,21 @@ func main() {
 			return
 		}
 		cfg.Options.Ignore = append(cfg.Options.Ignore, additionalIgnores...)
-		log.Println("Adding additional ignore rules:", additionalIgnores)
+		sugar.Debugf("Adding additional ignore rules: %s", additionalIgnores)
 	} else {
-		log.Println("No ignore file found")
+		sugar.Debugf("No ignore file found")
 	}
 
 	// Handle arguments
 	switch args.Command {
 	case "link":
 		if err := createSymlinks(sourceDirAbs, targetDir, cfg.Options.Force, cfg.Options.CreateDirs, cfg.Options.Confirm, cfg.Options.Ignore); err != nil {
-			log.Fatalf("Error linking: %v", err)
+			sugar.Fatalf("Error linking: %v", err)
 		}
 
 	case "unlink":
 		if err := removeSymlinks(sourceDirAbs, targetDir, cfg.Options.Ignore, cfg.Options.Confirm); err != nil {
-			log.Fatalf("Error unlinking: %v", err)
+			sugar.Fatalf("Error unlinking: %v", err)
 		}
 
 	case "stats":
