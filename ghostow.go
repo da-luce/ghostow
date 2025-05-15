@@ -95,7 +95,7 @@ func PreviewDiff(source, target string) error {
 // - handler: callback function called with each file's absolute path, os.FileInfo, and relative path.
 //
 // The walk skips the root directory itself and any ignored files or folders.
-func walkSourceDir(sourceDir string, ignoreList []string, handler func(source string, info os.FileInfo, relativePath string) error) error {
+func walkSourceDir(sourceDir string, ignoreList []string, handler func(source string, info os.FileInfo, relativePath string, shouldIgnore bool) error) error {
 
 	// Ensure sourceDir is valid
 	if !filepath.IsAbs(sourceDir) {
@@ -121,15 +121,10 @@ func walkSourceDir(sourceDir string, ignoreList []string, handler func(source st
 		}
 
 		// Ignore any directories or files in the ignore list
+		// We tell the caller if this item should be ignored (sometimes we want to track this, like in stats)
 		shouldIgnore, err := fileutil.MatchesPatterns(info.Name(), ignoreList)
 		if err != nil {
 			return fmt.Errorf("error checking ignore patterns: %v", err)
-		}
-		if shouldIgnore {
-			if info.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
 		}
 
 		// Handle the current item in the source directory
@@ -138,15 +133,23 @@ func walkSourceDir(sourceDir string, ignoreList []string, handler func(source st
 			return fmt.Errorf("failed to compute relative path: %w", err)
 		}
 
-		if err := handler(sourcePath, info, relativePath); err != nil {
+		if err := handler(sourcePath, info, relativePath, shouldIgnore); err != nil {
 			return err
 		}
 
-		if info.IsDir() {
-			return filepath.SkipDir // Skip walking into sub directories (whole directories are linked)
-		} else {
+		if shouldIgnore {
+			if info.IsDir() {
+				return filepath.SkipDir
+			}
 			return nil
 		}
+
+		if info.IsDir() {
+			return filepath.SkipDir // Skip walking into subdirectories (whole directories are linked)
+		}
+
+		return nil
+
 	})
 }
 
@@ -161,7 +164,11 @@ func createSymlinks(sourceDir, targetDir string, force, createDirs, confirm bool
 		return fmt.Errorf("walkSourceDir: expected absolute path, got: %s", sourceDir)
 	}
 
-	err := walkSourceDir(sourceDir, ignoreList, func(sourceAbs string, info os.FileInfo, sourceRel string) error {
+	err := walkSourceDir(sourceDir, ignoreList, func(sourceAbs string, info os.FileInfo, sourceRel string, shouldIgnore bool) error {
+
+		if shouldIgnore {
+			return nil
+		}
 
 		targetAbs := filepath.Join(targetDir, sourceRel)
 
@@ -226,7 +233,11 @@ func removeSymlinks(sourceDir, targetDir string, ignoreList []string, confirm bo
 		return fmt.Errorf("walkSourceDir: expected absolute path, got: %s", sourceDir)
 	}
 
-	err := walkSourceDir(sourceDir, ignoreList, func(sourceAbs string, info os.FileInfo, sourceRel string) error {
+	err := walkSourceDir(sourceDir, ignoreList, func(sourceAbs string, info os.FileInfo, sourceRel string, shouldIgnore bool) error {
+
+		if shouldIgnore {
+			return nil
+		}
 
 		targetAbs := filepath.Join(targetDir, sourceRel)
 
@@ -275,9 +286,14 @@ func gatherStats(sourceDir string, targetDir string, ignoreList []string) (Stats
 		return stats, fmt.Errorf("walkSourceDir: expected absolute path, got: %s", sourceDir)
 	}
 
-	err := walkSourceDir(sourceDir, ignoreList, func(sourceAbs string, info os.FileInfo, sourceRel string) error {
+	err := walkSourceDir(sourceDir, ignoreList, func(sourceAbs string, info os.FileInfo, sourceRel string, shouldIgnore bool) error {
 
 		targetAbs := filepath.Join(targetDir, sourceRel)
+
+		if shouldIgnore {
+			stats.Ignored++
+			return nil
+		}
 
 		// Check if the target path exists for this source
 		// IMPORTANT: returns if a symlink!
