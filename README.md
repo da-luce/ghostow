@@ -1,4 +1,7 @@
-# ghostow
+<h1>
+ghostow
+<img src="./media/ghostow-logo.png" alt="Description" height="60" />
+</h1>
 
 ghostow is a modern alternative to [GNU Stow](https://www.gnu.org/software/stow/), built in Go, with additional features.
 
@@ -6,6 +9,8 @@ Much like with stow, there are two primary directories involved:
 
 * Source Directory: This is the directory where your files (such as configuration files, scripts, etc.) reside. A `ghostow.toml` file must be present to document the fact that `ghostow` is managing this directory.
 * Target Directory: This is where the symlinks will point to. The files in the target directory are what the symlinks in the source directory will reference.
+
+Dotfile possession made easy... 👻
 
 | **Command** | **Description**                                                        |
 | ----------- | ---------------------------------------------------------------------- |
@@ -31,3 +36,8 @@ target_dir = "~"    # Path to the target directory where symlinks will be create
 
 - [ ] Some major cleanup -- did not consider linked directories
 - [ ] Add git diff to preview file differences
+
+## Sources
+
+- [Ghost Image](https://pixabay.com/vectors/ghosts-halloween-spooky-cute-haunt-1775548/)
+- [Box Image](https://pixabay.com/vectors/package-cardboard-box-delivery-8856091/)
