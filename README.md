@@ -3,14 +3,12 @@ ghostow
 <img src="./media/ghostow-logo.png" alt="Description" height="60" />
 </h1>
 
-ghostow is a modern alternative to [GNU Stow](https://www.gnu.org/software/stow/), built in Go, with additional features.
+`ghostow` is a modern alternative to [GNU Stow](https://www.gnu.org/software/stow/), built in Go. It manages symbolic links across directories, making it ideal for organizing dotfiles, scripts, or any structured file collections. Like its namesake, `ghostow` works quietly in the background, linking your files exactly where they need to be—your very own ghost in the machine. 👻
 
 Much like with stow, there are two primary directories involved:
 
 * Source Directory: This is the directory where your files (such as configuration files, scripts, etc.) reside. A `ghostow.toml` file must be present to document the fact that `ghostow` is managing this directory.
 * Target Directory: This is where the symlinks will point to. The files in the target directory are what the symlinks in the source directory will reference.
-
-Dotfile possession made easy... 👻
 
 | **Command** | **Description**                                                        |
 | ----------- | ---------------------------------------------------------------------- |
@@ -27,6 +25,7 @@ force = false       # If set to true, existing files in the target directory wil
 create_dirs = true  # If set to true, automatically create any missing directories in the target path.
 source_dir = "."    # Path to the source directory containing the files to be linked.
 target_dir = "~"    # Path to the target directory where symlinks will be created.
+log_level = "info" # Log verbosity level. Options: "debug", "info", "warn", "error", "dpanic", "panic", "fatal"
 
 # Custom links allow you to specify exceptions or modify the structure of the source directory.
 [exceptions]
@@ -34,8 +33,7 @@ target_dir = "~"    # Path to the target directory where symlinks will be create
 
 ## TODO
 
-- [ ] Some major cleanup -- did not consider linked directories
-- [ ] Add git diff to preview file differences
+- [ ] Use git diff to preview file differences
 
 ## Sources
 

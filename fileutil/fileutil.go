@@ -92,7 +92,7 @@ func CompareFileHashes(file1, file2 string) (bool, error) {
 	}
 
 	// Compare the hashes
-	return !bytes.Equal(hash1, hash2), nil
+	return bytes.Equal(hash1, hash2), nil
 }
 
 // MatchesAnyPattern checks if `value` matches any of the patterns in the list.
@@ -179,23 +179,17 @@ func IsSymlinkPointingTo(symlink, target string) (bool, error) {
 		return false, err
 	}
 
-	// Resolve absolute path of the symlink target, relative to the symlink's directory
-	symlinkDir := filepath.Dir(symlink)
-	absLinkTarget := linkTarget
-	if !filepath.IsAbs(linkTarget) {
-		absLinkTarget = filepath.Join(symlinkDir, linkTarget)
-	}
-	absLinkTarget, err = filepath.Abs(absLinkTarget)
+	linkTargetAbs, err := filepath.Abs(linkTarget)
 	if err != nil {
 		return false, err
 	}
 
-	absTarget, err := filepath.Abs(target)
+	targetAbs, err := filepath.Abs(target)
 	if err != nil {
 		return false, err
 	}
 
-	return absLinkTarget == absTarget, nil
+	return linkTargetAbs == targetAbs, nil
 }
 
 func PathsEqual(a, b string) (bool, error) {
