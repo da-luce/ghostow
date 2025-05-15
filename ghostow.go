@@ -106,7 +106,15 @@ func walkSourceDir(sourceDir string, ignoreList []string, handler func(source st
 			return fmt.Errorf("failed to compute relative path: %w", err)
 		}
 
-		return handler(sourcePath, info, relativePath)
+		if err := handler(sourcePath, info, relativePath); err != nil {
+			return err
+		}
+
+		if info.IsDir() {
+			return filepath.SkipDir // Skip walking into sub directories (whole directories are linked)
+		} else {
+			return nil
+		}
 	})
 }
 
@@ -251,47 +259,31 @@ type Stats struct {
 func gatherStats(sourceDir string, targetDir string, ignoreList []string) (Stats, error) {
 	stats := Stats{}
 
-	err := filepath.Walk(sourceDir, func(sourcePath string, info os.FileInfo, err error) error {
+	// Ensure sourceDir and targetDir are valid
+	if !filepath.IsAbs(sourceDir) {
+		return stats, fmt.Errorf("walkSourceDir: expected absolute path, got: %s", sourceDir)
+	}
+	if !filepath.IsAbs(targetDir) {
+		return stats, fmt.Errorf("walkSourceDir: expected absolute path, got: %s", sourceDir)
+	}
 
-		if err != nil {
-			fmt.Printf("Error walking directory %s: %v\n", sourcePath, err)
-			return err
-		}
+	err := walkSourceDir(sourceDir, ignoreList, func(sourceAbs string, info os.FileInfo, sourceRel string) error {
 
-		// Walk starts at root (sourceDir), we skip this
-		if sourcePath == sourceDir {
-			return nil
-		}
-
-		relPath, _ := filepath.Rel(sourceDir, sourcePath)
-		targetPath := filepath.Join(targetDir, relPath)
-
-		shouldIgnore, err := fileutil.MatchesPatterns(info.Name(), ignoreList)
-		if err != nil {
-			return fmt.Errorf("error checking ignore patterns: %v", err)
-		}
-		if shouldIgnore {
-			if info.IsDir() {
-				return filepath.SkipDir // Skip walking into the directory
-			} else {
-				stats.Ignored++
-				return nil // Continue walking without processing this file
-			}
-		}
+		targetAbs := filepath.Join(targetDir, sourceRel)
 
 		// Check if the target path exists for this source
 		// IMPORTANT: returns if a symlink!
-		if !fileutil.PathExists(targetPath) {
+		if !fileutil.PathExists(targetAbs) {
 			stats.NoTarget++
 			stats.Unlinked++
-			log.Printf("Target path %s does not exist\n", targetPath)
+			log.Printf("Target path %s does not exist\n", targetAbs)
 			return nil
 		}
 
 		// Check if it is a symlink
-		isLink := fileutil.IsSymlink(targetPath)
+		isLink := fileutil.IsSymlink(targetAbs)
 		if !isLink {
-			different, err := fileutil.CompareFileHashes(sourcePath, targetPath)
+			different, err := fileutil.CompareFileHashes(sourceAbs, targetAbs)
 			if err != nil {
 				fmt.Printf("Error comparing files: %v\n", err)
 			} else if different {
@@ -304,15 +296,14 @@ func gatherStats(sourceDir string, targetDir string, ignoreList []string) (Stats
 		}
 
 		// Target is a symlink, check if it is linked to the source
-		linkedTarget, err := os.Readlink(targetPath)
+		targetDest, err := os.Readlink(targetAbs)
 		if err != nil {
 			return fmt.Errorf("error reading symlink: %v", err)
 		}
 
-		sourceAbs, err := filepath.Abs(sourcePath)
-		correctSource := fileutil.ExpandPath(linkedTarget) == fileutil.ExpandPath(sourceAbs)
+		correctSource := fileutil.ExpandPath(targetDest) == fileutil.ExpandPath(sourceAbs)
 		if correctSource {
-			if fileutil.IsDir(targetPath) {
+			if fileutil.IsDir(targetDest) {
 				stats.LinkedDirs++
 			} else {
 				stats.LinkedFiles++
@@ -322,12 +313,8 @@ func gatherStats(sourceDir string, targetDir string, ignoreList []string) (Stats
 			stats.Unlinked++
 		}
 
-		// If the dir is a symlink, don't walk into it
-		if info.IsDir() {
-			return filepath.SkipDir
-		}
-
 		return nil
+
 	})
 
 	return stats, err
@@ -407,6 +394,8 @@ func main() {
 		log.Printf("Using target directory %s\n", targetDir)
 	}
 
+	sourceDirAbs, _ := filepath.Abs(sourceDir)
+
 	// Ensure target dir is not a child of the source
 	isChild, err := fileutil.IsChildPath(targetDir, sourceDir)
 	if err != nil {
@@ -445,7 +434,7 @@ func main() {
 		}
 
 	case "stats":
-		printStats(sourceDir, targetDir, cfg.Options.Ignore)
+		printStats(sourceDirAbs, targetDir, cfg.Options.Ignore)
 
 	default:
 		fmt.Println("Unknown command:", args.Command)
