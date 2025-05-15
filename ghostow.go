@@ -68,8 +68,26 @@ func createSymlinks(sourceDir, targetDir string, force, createDirs, confirm bool
 			return nil
 		}
 
+		// Remove the existing symlink or file if needed
+		if fileutil.PathExists(dest) {
+			if force {
+				if err := os.RemoveAll(dest); err != nil {
+					return fmt.Errorf("failed to remove existing file %s: %w", dest, err)
+				}
+			} else {
+				if stringutil.AskForConfirmation("Delete existing file at " + dest + "?") {
+					if err := os.RemoveAll(dest); err != nil {
+						return fmt.Errorf("failed to remove existing file %s: %w", dest, err)
+					}
+				} else {
+					fmt.Printf("Skipped: %s\n", dest)
+					return nil
+				}
+			}
+		}
+
 		// Create the symlink
-		if err := fileutil.CreateSymlink(source, dest, force, createDirs); err != nil {
+		if err := fileutil.CreateSymlink(source, dest, createDirs); err != nil {
 			log.Printf("Error creating symlink for %s: %v", source, err)
 		} else {
 			fmt.Printf("Linked %s -> %s\n", source, dest)
@@ -217,14 +235,14 @@ func printStats(sourceDir string, targetDir string, ignore []string) {
 	if err != nil {
 		log.Fatalf("Error gathering stats: %v", err)
 	}
-	fmt.Printf("Displaying for statistics linking %s\n\n", linkString(sourceDir, targetDir))
+	fmt.Printf("Displaying statistics for linking %s\n\n", linkString(sourceDir, targetDir))
 	rows := [][2]string{
 		{"Linked files", green(stats.Linked)},
 		{"Unlinked files", red(stats.Unlinked)},
-		{"    Target does not exist", red(stats.NoTarget)},
-		{"    Target does not point to source", red(stats.IncorrectSymlink)},
-		{"    Target exists with same content", red(stats.SameContents)},
-		{"    Target exists with different content", red(stats.DifferentContents)},
+		{"  ├─ Target does not exist", red(stats.NoTarget)},
+		{"  ├─ Target is broken link", red(stats.IncorrectSymlink)},
+		{"  ├─ Target exists with same content", red(stats.SameContents)},
+		{"  ╰─ Target exists with different content", red(stats.DifferentContents)},
 		{"Ignored files", blue(stats.Ignored)},
 	}
 	stringutil.PrintDotTable(rows)
@@ -298,6 +316,7 @@ func main() {
 		log.Println("Adding additional ignore rules:", additionalIgnores)
 	}
 
+	// Handle arguments
 	switch args.Command {
 	case "link":
 		if err := createSymlinks(sourceDir, targetDir, cfg.Options.Force, cfg.Options.CreateDirs, cfg.Options.Confirm); err != nil {

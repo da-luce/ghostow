@@ -152,19 +152,12 @@ func ReadFileLines(filePath string, ignoreBlank bool) ([]string, error) {
 }
 
 // Create a symlink at the target location
-func CreateSymlink(source, dest string, force, createDirs bool) error {
+func CreateSymlink(source, dest string, createDirs bool) error {
 	// Ensure the target directory exists
 	if createDirs {
 		dir := filepath.Dir(dest)
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			return fmt.Errorf("failed to create directory %s: %w", dir, err)
-		}
-	}
-
-	// Remove the existing symlink or file if needed
-	if force {
-		if err := os.RemoveAll(dest); err != nil {
-			return fmt.Errorf("failed to remove existing file %s: %w", dest, err)
 		}
 	}
 

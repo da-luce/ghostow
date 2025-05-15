@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/fatih/color"
+	"github.com/mattn/go-runewidth"
 )
 
 // AskForConfirmation prompts the user with the given message and expects y/n input.
@@ -35,15 +36,15 @@ func StripANSI(str string) string {
 func PrintDotTable(rows [][2]string) {
 	maxLeftLen := 0
 	for _, row := range rows {
-		if len(row[0]) > maxLeftLen {
-			maxLeftLen = len(row[0])
+		if runewidth.StringWidth(row[0]) > maxLeftLen {
+			maxLeftLen = runewidth.StringWidth(row[0])
 		}
 	}
 
 	maxRightLen := 0
 	for _, row := range rows {
-		if len(StripANSI(row[1])) > maxRightLen {
-			maxRightLen = len(StripANSI(row[1]))
+		if runewidth.StringWidth(StripANSI(row[1])) > maxRightLen {
+			maxRightLen = runewidth.StringWidth(StripANSI(row[1]))
 		}
 	}
 
@@ -61,7 +62,7 @@ func PrintDotTable(rows [][2]string) {
 
 	for _, row := range rows {
 		left, right := row[0], row[1]
-		numDots := maxLeftLen - len(left) + extraDots
+		numDots := maxLeftLen - runewidth.StringWidth(left) + extraDots
 		dots := strings.Repeat(".", numDots)
 		fmt.Printf("%s%s%s%s%s\n", left, leftSpace, dots, rightSpace, right)
 	}
