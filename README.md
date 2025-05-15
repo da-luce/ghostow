@@ -7,8 +7,8 @@ ghostow
 
 Much like with stow, there are two primary directories involved:
 
-* Source Directory: This is the directory where your files (such as configuration files, scripts, etc.) reside. A `ghostow.toml` file must be present to document the fact that `ghostow` is managing this directory.
-* Target Directory: This is where the symlinks will point to. The files in the target directory are what the symlinks in the source directory will reference.
+- Source Directory: This is the directory where your files (such as configuration files, scripts, etc.) reside. A `ghostow.toml` file must be present to document the fact that `ghostow` is managing this directory.
+- Target Directory: This is where the symlinks will point to. The files in the target directory are what the symlinks in the source directory will reference.
 
 | **Command**        | **Description**                                                        | **Implementation** |
 | ------------------ | ---------------------------------------------------------------------- | ------------------ |
@@ -40,3 +40,15 @@ log_level = "info"  # Log verbosity level. Options: "debug", "info", "warn", "er
 
 - [Ghost Image](https://pixabay.com/vectors/ghosts-halloween-spooky-cute-haunt-1775548/)
 - [Box Image](https://pixabay.com/vectors/package-cardboard-box-delivery-8856091/)
+
+## Why not use a bare Git repo for dotfiles?
+
+- Can't manage config files outside `~`, like /etc/ssh/sshd_config
+- Bare repos clutter `~` with Git metadata or force all dotfiles into home
+- Keeping templates and generated files separate keeps your home clean and organized
+
+## Why not a more complicated dotfiles solution?
+
+- Tools should do one thing, and do that thing well. Akin to the first tenet in the [Unix philosphy](https://en.wikipedia.org/wiki/Unix_philosophy)
+- Want templating? Use Jinja2 (or a similar tool) as a separate step before linking your dotfiles,
+- The best setups empower _learning_ and creativity—they don’t force you into rigid workflows or obscure magic
