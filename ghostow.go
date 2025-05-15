@@ -228,6 +228,7 @@ func gatherStats(sourceDir string, targetDir string, ignoreList []string) (Stats
 		if !fileutil.PathExists(targetPath) {
 			stats.NoTarget++
 			stats.Unlinked++
+			log.Printf("Target path %s does not exist\n", targetPath)
 			return nil
 		}
 
@@ -363,7 +364,7 @@ func main() {
 
 	// Add additional ignore rules
 	ignoreBlank := true
-	if !fileutil.IsRegularFile(ignoreFile) {
+	if fileutil.IsRegularFile(ignoreFile) {
 		additionalIgnores, err := fileutil.ReadFileLines(ignoreFile, ignoreBlank)
 		if err != nil {
 			fmt.Printf("Error reading %s: %v\n", ignoreFile, err)
@@ -371,6 +372,8 @@ func main() {
 		}
 		cfg.Options.Ignore = append(cfg.Options.Ignore, additionalIgnores...)
 		log.Println("Adding additional ignore rules:", additionalIgnores)
+	} else {
+		log.Println("No ignore file found")
 	}
 
 	// Handle arguments
