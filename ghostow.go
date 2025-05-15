@@ -54,6 +54,62 @@ func PreviewDiff(source, target string) error {
 	return cmd.Run()
 }
 
+// Common logic for walking the source directory
+// walkSourceDir walks the sourceDir and calls handler for each non-ignored file or directory.
+//
+// Parameters:
+// - sourceDirAbs: the root directory to start walking from. Absolute path.
+// - ignoreList: list of filename patterns to skip (e.g., ".git", "*.tmp").
+// - handler: callback function called with each file's absolute path, os.FileInfo, and relative path.
+//
+// The walk skips the root directory itself and any ignored files or folders.
+func walkSourceDir(sourceDir string, ignoreList []string, handler func(source string, info os.FileInfo, relativePath string) error) error {
+
+	// Ensure sourceDir is valid
+	if !filepath.IsAbs(sourceDir) {
+		return fmt.Errorf("walkSourceDir: expected absolute path, got: %s", sourceDir)
+	}
+	if !fileutil.IsDir(sourceDir) {
+		return fmt.Errorf("walkSourceDir: directory does not exist: %s", sourceDir)
+	}
+
+	return filepath.Walk(sourceDir, func(sourcePath string, info os.FileInfo, err error) error {
+		if err != nil {
+			fmt.Printf("Error walking directory %s: %v\n", sourcePath, err)
+			return err
+		}
+
+		// Skip the root directory (but walk into it)
+		isRootDir, err := fileutil.PathsEqual(sourcePath, sourceDir)
+		if err != nil {
+			return fmt.Errorf("failed to compare paths: %w", err)
+		}
+		if isRootDir {
+			return nil
+		}
+
+		// Ignore any directories or files in the ignore list
+		shouldIgnore, err := fileutil.MatchesPatterns(info.Name(), ignoreList)
+		if err != nil {
+			return fmt.Errorf("error checking ignore patterns: %v", err)
+		}
+		if shouldIgnore {
+			if info.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+
+		// Handle the current item in the source directory
+		relativePath, err := filepath.Rel(sourceDir, sourcePath)
+		if err != nil {
+			return fmt.Errorf("failed to compute relative path: %w", err)
+		}
+
+		return handler(sourcePath, info, relativePath)
+	})
+}
+
 // Walk the source directory and process symlinks
 func createSymlinks(sourceDir, targetDir string, force, createDirs, confirm bool, ignoreList []string) error {
 	// Walk the source directory

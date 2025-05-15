@@ -197,3 +197,15 @@ func IsSymlinkPointingTo(symlink, target string) (bool, error) {
 
 	return absLinkTarget == absTarget, nil
 }
+
+func PathsEqual(a, b string) (bool, error) {
+	ra, err := filepath.EvalSymlinks(filepath.Clean(a))
+	if err != nil {
+		return false, err
+	}
+	rb, err := filepath.EvalSymlinks(filepath.Clean(b))
+	if err != nil {
+		return false, err
+	}
+	return ra == rb, nil
+}
