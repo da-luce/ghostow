@@ -10,11 +10,13 @@ Much like with stow, there are two primary directories involved:
 * Source Directory: This is the directory where your files (such as configuration files, scripts, etc.) reside. A `ghostow.toml` file must be present to document the fact that `ghostow` is managing this directory.
 * Target Directory: This is where the symlinks will point to. The files in the target directory are what the symlinks in the source directory will reference.
 
-| **Command** | **Description**                                                        |
-| ----------- | ---------------------------------------------------------------------- |
-| `gstow link`      | Creates symlinks in the target directory, pointing back to the source. |
-| `gstow unlink`    | Removes symlinks in the target directory.                              |
-| `gstow stats`     | Displays statistics about the current symlinks and their statuses.     |
+| **Command**        | **Description**                                                        | **Implementation** |
+| ------------------ | ---------------------------------------------------------------------- | ------------------ |
+| `gstow link`       | Creates symlinks in the target directory, pointing back to the source. | ✓                 |
+| `gstow unlink`     | Removes symlinks in the target directory.                              | ✓                 |
+| `gstow stats`      | Displays statistics about the current symlinks and their statuses.     | ✓                 |
+| `gstow clean`      | Removes broken or orphaned symlinks from the target directory.         | ✕                 |
+| `gstow relativize` | Convert absolute symlink to relative                                   | ✕                 |
 
 Here are the default settings for a `ghostow.toml` configuration file:
 
@@ -25,15 +27,14 @@ force = false       # If set to true, existing files in the target directory wil
 create_dirs = true  # If set to true, automatically create any missing directories in the target path.
 source_dir = "."    # Path to the source directory containing the files to be linked.
 target_dir = "~"    # Path to the target directory where symlinks will be created.
-log_level = "info" # Log verbosity level. Options: "debug", "info", "warn", "error", "dpanic", "panic", "fatal"
-
-# Custom links allow you to specify exceptions or modify the structure of the source directory.
-[exceptions]
+log_level = "info"  # Log verbosity level. Options: "debug", "info", "warn", "error", "dpanic", "panic", "fatal"
 ```
 
 ## TODO
 
-- [ ] Use git diff to preview file differences
+- [ ] `--dry-run` option
+- [ ] Better CLI interface (e.g. y/N/p for previewing a different file)
+- [ ] Add other general [symlink utilities](https://github.com/brandt/symlinks)
 
 ## Sources
 
