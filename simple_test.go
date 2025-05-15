@@ -132,7 +132,7 @@ func TestGatherStats(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Assert that stats are correct (no symlinks, no target)
-	assert.Equal(t, 0, stats.Linked)
+	assert.Equal(t, 0, stats.LinkedFiles)
 	assert.Equal(t, 1, stats.Unlinked)
 	assert.Equal(t, 0, stats.SameContents)
 	assert.Equal(t, 0, stats.DifferentContents)

@@ -182,7 +182,8 @@ func removeSymlinks(sourceDir, targetDir string, confirm bool) error {
 }
 
 type Stats struct {
-	Linked            int
+	LinkedFiles       int
+	LinkedDirs        int
 	Unlinked          int
 	SameContents      int
 	DifferentContents int
@@ -201,6 +202,11 @@ func gatherStats(sourceDir string, targetDir string, ignoreList []string) (Stats
 			return err
 		}
 
+		// Walk starts at root (sourceDir), we skip this
+		if sourcePath == sourceDir {
+			return nil
+		}
+
 		relPath, _ := filepath.Rel(sourceDir, sourcePath)
 		targetPath := filepath.Join(targetDir, relPath)
 
@@ -208,7 +214,6 @@ func gatherStats(sourceDir string, targetDir string, ignoreList []string) (Stats
 		if err != nil {
 			return fmt.Errorf("error checking ignore patterns: %v", err)
 		}
-
 		if shouldIgnore {
 			if info.IsDir() {
 				return filepath.SkipDir // Skip walking into the directory
@@ -216,11 +221,6 @@ func gatherStats(sourceDir string, targetDir string, ignoreList []string) (Stats
 				stats.Ignored++
 				return nil // Continue walking without processing this file
 			}
-		}
-
-		// Skip other directories
-		if info.IsDir() {
-			return nil
 		}
 
 		// Check if the target path exists for this source
@@ -252,12 +252,22 @@ func gatherStats(sourceDir string, targetDir string, ignoreList []string) (Stats
 			return fmt.Errorf("error reading symlink: %v", err)
 		}
 
-		correctSource := fileutil.ExpandPath(linkedTarget) == fileutil.ExpandPath(sourcePath)
+		sourceAbs, err := filepath.Abs(sourcePath)
+		correctSource := fileutil.ExpandPath(linkedTarget) == fileutil.ExpandPath(sourceAbs)
 		if correctSource {
-			stats.Linked++
+			if fileutil.IsDir(targetPath) {
+				stats.LinkedDirs++
+			} else {
+				stats.LinkedFiles++
+			}
 		} else {
 			stats.IncorrectSymlink++
 			stats.Unlinked++
+		}
+
+		// If the dir is a symlink, don't walk into it
+		if info.IsDir() {
+			return filepath.SkipDir
 		}
 
 		return nil
@@ -283,7 +293,8 @@ func printStats(sourceDir string, targetDir string, ignore []string) {
 	}
 	fmt.Printf("Displaying statistics for linking %s\n\n", linkString(sourceDir, targetDir))
 	rows := [][2]string{
-		{"Linked files", green(stats.Linked)},
+		{"Linked files", green(stats.LinkedFiles)},
+		{"Linked directories", green(stats.LinkedDirs)},
 		{"Unlinked files", red(stats.Unlinked)},
 		{"  ├─ Target does not exist", red(stats.NoTarget)},
 		{"  ├─ Target is broken link", red(stats.IncorrectSymlink)},

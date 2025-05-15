@@ -29,4 +29,5 @@ target_dir = "~"    # Path to the target directory where symlinks will be create
 
 ## TODO
 
+- [ ] Some major cleanup -- did not consider linked directories
 - [ ] Add git diff to preview file differences
