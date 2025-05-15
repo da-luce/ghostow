@@ -184,32 +184,35 @@ func createSymlinks(sourceDir, targetDir string, force, createDirs, confirm bool
 }
 
 // Walk the target directory and remove symlinks
-func removeSymlinks(sourceDir, targetDir string, confirm bool) error {
-	// Walk the target directory
-	err := filepath.Walk(targetDir, func(target string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
+func removeSymlinks(sourceDir, targetDir string, ignoreList []string, confirm bool) error {
+
+	// Ensure sourceDir and targetDir are valid
+	if !filepath.IsAbs(sourceDir) {
+		return fmt.Errorf("walkSourceDir: expected absolute path, got: %s", sourceDir)
+	}
+	if !filepath.IsAbs(targetDir) {
+		return fmt.Errorf("walkSourceDir: expected absolute path, got: %s", sourceDir)
+	}
+
+	err := walkSourceDir(sourceDir, ignoreList, func(sourceAbs string, info os.FileInfo, sourceRel string) error {
+
+		targetAbs := filepath.Join(targetDir, sourceRel)
 
 		// Skip non-symlink files (we only want symlinks)
-		if info.Mode()&os.ModeSymlink == 0 {
+		if !fileutil.IsSymlink(targetAbs) {
 			return nil
 		}
 
-		// Build the relative path from the target directory
-		relativePath, _ := filepath.Rel(targetDir, target)
-		source := fileutil.ExpandPath(filepath.Join(sourceDir, relativePath)) // Construct source path
-
 		// Ask for confirmation if needed
-		if confirm && !stringutil.AskForConfirmation(fmt.Sprintf("Remove symlink %s?", linkString(source, target))) {
+		if confirm && !stringutil.AskForConfirmation(fmt.Sprintf("Remove symlink %s?", linkString(sourceAbs, targetAbs))) {
 			return nil
 		}
 
 		// Remove the symlink
-		if err := os.Remove(target); err != nil {
-			log.Printf("Error removing symlink for %s: %v", target, err)
+		if err := os.Remove(targetAbs); err != nil {
+			log.Printf("Error removing symlink %s: %v", linkString(targetAbs, sourceAbs), err)
 		} else {
-			log.Printf("Removed symlink: %s", target)
+			log.Printf("Removed symlink: %s", linkString(targetAbs, sourceAbs))
 		}
 
 		return nil
@@ -402,7 +405,7 @@ func main() {
 		}
 
 	case "unlink":
-		if err := removeSymlinks(sourceDirAbs, targetDir, cfg.Options.Force); err != nil {
+		if err := removeSymlinks(sourceDirAbs, targetDir, cfg.Options.Ignore, cfg.Options.Confirm); err != nil {
 			log.Fatalf("Error unlinking: %v", err)
 		}
 
