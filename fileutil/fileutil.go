@@ -110,13 +110,26 @@ func MatchesPatterns(value string, patterns []string) (bool, error) {
 	return false, nil
 }
 
-func ExpandPath(path string) string {
-	// Expands the ~ to the full home directory path
+func ExpandPath(path string) (string, error) {
+	// Expand ~ to the home directory
 	if strings.HasPrefix(path, "~") {
-		usr, _ := user.Current()
-		return filepath.Join(usr.HomeDir, path[1:])
+		usr, err := user.Current()
+		if err != nil {
+			return "", err
+		}
+		path = filepath.Join(usr.HomeDir, strings.TrimPrefix(path, "~"))
 	}
-	return os.ExpandEnv(path)
+
+	// Expand environment variables
+	path = os.ExpandEnv(path)
+
+	// Make path absolute
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+
+	return absPath, nil
 }
 
 func ReadFileLines(filePath string, ignoreBlank bool) ([]string, error) {

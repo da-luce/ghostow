@@ -69,7 +69,7 @@ func InitLogger(logLevel string) error {
 	}
 	defer logger.Sync()
 	sugar = logger.Sugar()
-	sugar.Debug("Initialized logger.")
+	sugar.Debug("Initialized logger")
 	return nil
 }
 
@@ -102,14 +102,14 @@ func walkSourceDir(sourceDir string, ignoreList []string, handler func(source st
 		return fmt.Errorf("walkSourceDir: expected absolute path, got source directory: %s", sourceDir)
 	}
 
-	return filepath.Walk(sourceDir, func(sourcePath string, info os.FileInfo, err error) error {
+	return filepath.Walk(sourceDir, func(pathRel string, info os.FileInfo, err error) error {
 		if err != nil {
-			fmt.Printf("Error walking directory %s: %v\n", sourcePath, err)
+			fmt.Printf("Error walking directory %s: %v\n", pathRel, err)
 			return err
 		}
 
 		// Skip the root directory (but walk into it)
-		isRootDir, err := fileutil.PathsEqual(sourcePath, sourceDir)
+		isRootDir, err := fileutil.PathsEqual(pathRel, sourceDir)
 		if err != nil {
 			return fmt.Errorf("failed to compare paths: %w", err)
 		}
@@ -124,13 +124,18 @@ func walkSourceDir(sourceDir string, ignoreList []string, handler func(source st
 			return fmt.Errorf("error checking ignore patterns: %v", err)
 		}
 
+		// Ignore symlinks in the source directory
+		if fileutil.IsSymlink(pathRel) {
+			return nil
+		}
+
 		// Handle the current item in the source directory
-		relativePath, err := filepath.Rel(sourceDir, sourcePath)
+		relativePath, err := filepath.Rel(sourceDir, pathRel)
 		if err != nil {
 			return fmt.Errorf("failed to compute relative path: %w", err)
 		}
 
-		if err := handler(sourcePath, info, relativePath, shouldIgnore); err != nil {
+		if err := handler(pathRel, info, relativePath, shouldIgnore); err != nil {
 			return err
 		}
 
@@ -353,8 +358,9 @@ func gatherStats(sourceDir string, targetDir string, ignoreList []string) (Stats
 		if err != nil {
 			return fmt.Errorf("error reading symlink: %v", err)
 		}
+		targetDest, _ = fileutil.ExpandPath(targetDest)
 
-		correctSource := fileutil.ExpandPath(targetDest) == fileutil.ExpandPath(sourceAbs)
+		correctSource := targetDest == sourceAbs
 		if correctSource {
 			if fileutil.IsDir(targetDest) {
 				stats.LinkedDirs++
@@ -403,23 +409,22 @@ func printStats(sourceDir string, targetDir string, ignore []string) {
 }
 
 const ignoreFile = ".ghostowignore"
-const configFile = "ghostow.toml"
 
 func main() {
+
 	var args Args
 	arg.MustParse(&args)
 
-	// Load config
-	var cfg Config = defaultConfig
-
 	// Parse config
+	var cfg Config = defaultConfig
 	if fileutil.IsRegularFile(args.ConfigFile) {
 		if _, err := toml.DecodeFile(args.ConfigFile, &cfg); err != nil {
 			sugar.Fatalf("Failed to parse config: %v", err)
 			return
 		}
-
 	}
+
+	// Initialize logging
 	InitLogger(cfg.Options.LogLevel)
 
 	// Parse config file
@@ -438,34 +443,38 @@ func main() {
 	}
 
 	// Parse source and target directories
-	sourceDir := fileutil.ExpandPath(cfg.Options.SourceDir)
-	targetDir := fileutil.ExpandPath(cfg.Options.TargetDir)
+	sourceDir, _ := fileutil.ExpandPath(cfg.Options.SourceDir)
+	targetDir, _ := fileutil.ExpandPath(cfg.Options.TargetDir)
+	// Ensure directories exist
 	if !fileutil.IsDir(sourceDir) {
 		fmt.Printf("Source directory %s not found\n", sourceDir)
 		return
-	} else {
-		sugar.Infof("Using source directory %s", sourceDir)
 	}
 	if !fileutil.IsDir(targetDir) {
 		fmt.Printf("Target directory %s not found\n", targetDir)
 		return
-	} else {
-		sugar.Infof("Using target directory %s", targetDir)
 	}
-
-	sourceDirAbs, _ := filepath.Abs(sourceDir)
-	targetDirAbs, _ := filepath.Abs(targetDir)
-
+	// Ensure directories aren't a link
+	if fileutil.IsSymlink(sourceDir) {
+		fmt.Printf("Source directory %s must not be a symlink\n", sourceDir)
+		return
+	}
+	if fileutil.IsSymlink(targetDir) {
+		fmt.Printf("Target directory %s must not be a symlink\n", targetDir)
+		return
+	}
 	// Ensure target dir is not a child of the source
-	isChild, err := fileutil.IsChildPath(targetDirAbs, sourceDirAbs)
+	isChild, err := fileutil.IsChildPath(targetDir, sourceDir)
 	if err != nil {
 		fmt.Printf("Error checking path relationship: %v\n", err)
 		return
 	}
 	if isChild {
-		fmt.Printf("Target directory %s is a child of source %s\n", targetDirAbs, sourceDirAbs)
+		fmt.Printf("Target directory %s is a child of source %s\n", targetDir, sourceDir)
 		return
 	}
+	sugar.Infof("Using source directory %s", sourceDir)
+	sugar.Infof("Using target directory %s", targetDir)
 
 	// Add additional ignore rules
 	ignoreBlank := true
@@ -484,17 +493,17 @@ func main() {
 	// Handle arguments
 	switch args.Command {
 	case "link":
-		if err := createSymlinks(sourceDirAbs, targetDirAbs, cfg.Options.Force, cfg.Options.CreateDirs, cfg.Options.Confirm, cfg.Options.Ignore); err != nil {
+		if err := createSymlinks(sourceDir, targetDir, cfg.Options.Force, cfg.Options.CreateDirs, cfg.Options.Confirm, cfg.Options.Ignore); err != nil {
 			sugar.Fatalf("Error linking: %v", err)
 		}
 
 	case "unlink":
-		if err := removeSymlinks(sourceDirAbs, targetDirAbs, cfg.Options.Ignore, cfg.Options.Confirm); err != nil {
+		if err := removeSymlinks(sourceDir, targetDir, cfg.Options.Ignore, cfg.Options.Confirm); err != nil {
 			sugar.Fatalf("Error unlinking: %v", err)
 		}
 
 	case "stats":
-		printStats(sourceDirAbs, targetDirAbs, cfg.Options.Ignore)
+		printStats(sourceDir, targetDir, cfg.Options.Ignore)
 
 	default:
 		fmt.Println("Unknown command:", args.Command)
