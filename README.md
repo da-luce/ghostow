@@ -43,8 +43,9 @@ log_level = "info"  # Log verbosity level. Options: "debug", "info", "warn", "er
 
 ## Why not use a bare Git repo for dotfiles?
 
-- Can't manage config files outside `~`, like /etc/ssh/sshd_config
+- I have gotten into the (perhaps reckless) habit of running `add .` and `git push` all the time—this makes managing a bare repo in `~` a bit annoying (or dangerous!)
 - Bare repos clutter `~` with Git metadata or force all dotfiles into home
+- To add a root level `README.md` to your dotfiles, you have to have a `README.md` always present in your home directory
 - Keeping templates and generated files separate keeps your home clean and organized
 
 ## Why not a more complicated dotfiles solution?
