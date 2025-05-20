@@ -10,6 +10,7 @@ import (
 
 	"ghostow/fileutil"
 	"ghostow/stringutil"
+	"ghostow/tree"
 
 	"github.com/BurntSushi/toml"
 	"github.com/alexflint/go-arg"
@@ -410,25 +411,21 @@ type Args struct {
 }
 
 func printStats(sourceDir string, targetDir string, ignore []string) {
-	green := color.New(color.FgGreen).SprintFunc()
-	red := color.New(color.FgRed).SprintFunc()
-	blue := color.New(color.FgBlue).SprintFunc()
-	stats, err := gatherStats(sourceDir, targetDir, ignore)
-	if err != nil {
-		sugar.Fatalf("Error gathering stats: %v", err)
+	root := &tree.TreeNode{Text: "Stats"}
+
+	linked := &tree.TreeNode{Text: "Linked files", Icon: "✔", Color: color.New(color.FgGreen).SprintFunc()}
+	ignored := &tree.TreeNode{Text: "Ignored files", Icon: "―", Color: color.New(color.FgBlue).SprintFunc()}
+
+	unlinked := &tree.TreeNode{Text: "Unlinked files", Icon: "✖", Color: color.New(color.FgRed).SprintFunc()}
+	unlinked.Children = []*tree.TreeNode{
+		{Text: "Target does not exist", Icon: "•", Color: color.New(color.FgRed).SprintFunc()},
+		{Text: "Broken symlink", Icon: "•", Color: color.New(color.FgRed).SprintFunc()},
+		{Text: "Same content, not linked", Icon: "•", Color: color.New(color.FgRed).SprintFunc()},
 	}
-	fmt.Printf("Displaying statistics for linking %s\n\n", linkString(targetDir, sourceDir))
-	rows := [][2]string{
-		{"Linked files", green(stats.LinkedFiles)},
-		{"Linked directories", green(stats.LinkedDirs)},
-		{"Unlinked files", red(stats.Unlinked)},
-		{"  ├─ Target does not exist", red(stats.NoTarget)},
-		{"  ├─ Target is broken link", red(stats.IncorrectSymlink)},
-		{"  ├─ Target exists with same content", red(stats.SameContents)},
-		{"  ╰─ Target exists with different content", red(stats.DifferentContents)},
-		{"Ignored files", blue(stats.Ignored)},
-	}
-	stringutil.PrintDotTable(rows)
+
+	root.Children = []*tree.TreeNode{linked, unlinked, ignored}
+
+	tree.PrintTreeNode(root, "", true)
 }
 
 const ignoreFile = ".ghostowignore"
