@@ -119,7 +119,7 @@ func determineTargetState(sourceDir, targetDir, sourceRel string, ignoreList []s
 	if fileutil.IsSymlink(targetAbs) {
 		linked, _ := fileutil.IsSymlinkPointingTo(targetAbs, sourceAbs)
 		if linked {
-			sugar.Debugf("Target link already exists: %s", linkString(targetAbs, sourceAbs))
+			sugar.Debugf("Target link is correct: %s", linkString(targetAbs, sourceAbs))
 			return AlreadyLinked, nil
 		}
 
