@@ -86,17 +86,63 @@ func PreviewDiff(source, target string) error {
 	return cmd.Run()
 }
 
-type FileState int
+type TargetState int
 
 const (
-	Ignore            FileState = iota // File should be ignored
-	AlreadyLinked                      // Correct symlink exists
-	Missing                            // No file or link exists at target
-	MislinkedInternal                  // Symlink exists but points to wrong place in source dir
-	MislinkedExternal                  // Symlink exists but points outside source dir
-	ExistsIdentical                    // Regular file or dir exists, content matches source
-	ExistsModified                     // Regular file or dir exists, content differs from source
+	Ignore            TargetState = iota // File should be ignored
+	AlreadyLinked                        // Correct symlink exists
+	Missing                              // No file or link exists at target
+	MislinkedInternal                    // Symlink exists but points to wrong place in source dir
+	MislinkedExternal                    // Symlink exists but points outside source dir
+	ExistsIdentical                      // Regular file or dir exists, content matches source
+	ExistsModified                       // Regular file or dir exists, content differs from source
 )
+
+func determineTargetState(sourceDir, targetDir, sourceRel string, ignoreList []string) (TargetState, error) {
+
+	// Get absolute paths
+	targetAbs := filepath.Join(targetDir, sourceRel)
+	sourceAbs := filepath.Join(sourceDir, sourceRel)
+
+	// Ignore any directories or files in the ignore list
+	if matched, err := fileutil.MatchesPatterns(filepath.Base(sourceAbs), ignoreList); err != nil {
+		return Ignore, fmt.Errorf("error checking ignore patterns: %v", err)
+	} else if matched {
+		return Ignore, nil
+	}
+
+	if !fileutil.PathExists(targetAbs) {
+		sugar.Debugf("No target exists: %s", targetAbs)
+		return Missing, nil
+	}
+
+	if fileutil.IsSymlink(targetAbs) {
+		linked, _ := fileutil.IsSymlinkPointingTo(targetAbs, sourceAbs)
+		if linked {
+			sugar.Debugf("Target link already exists: %s", linkString(targetAbs, sourceAbs))
+			return AlreadyLinked, nil
+		}
+
+		linkTarget, _ := os.Readlink(targetAbs)
+		inSource, _ := fileutil.IsChildPath(linkTarget, sourceDir)
+		if inSource {
+			sugar.Debugf("Target link is internally mislinked: %s", linkString(targetAbs, linkTarget))
+			return MislinkedInternal, nil
+		}
+		sugar.Debugf("Target link is externally mislinked: %s", linkString(targetAbs, linkTarget))
+		return MislinkedExternal, nil
+	}
+
+	// Not a symlink — check file or dir content
+	// FIXME: does this work with dirs?
+	same, _ := fileutil.CompareFileHashes(sourceAbs, targetAbs)
+	if same {
+		sugar.Debugf("Target exists and has identical content: %s", targetAbs)
+		return ExistsIdentical, nil
+	}
+	sugar.Debugf("Target exists and has different content: %s", targetAbs)
+	return ExistsModified, nil
+}
 
 // Common logic for walking the source directory
 // walkSourceDir walks the sourceDir and calls handler for each non-ignored file or directory.
@@ -107,21 +153,21 @@ const (
 // - handler: callback function called with each file's absolute path, os.FileInfo, and relative path.
 //
 // The walk skips the root directory itself and any ignored files or folders.
-func walkSourceDir(sourceDir string, targetDir string, ignoreList []string, handler func(sourceRel string, info os.FileInfo, state FileState) error) error {
+func walkSourceDir(sourceDir string, targetDir string, ignoreList []string, handler func(sourceRel, targetAbs string, targetState TargetState) error) error {
 
 	// Ensure sourceDir is valid
 	if !filepath.IsAbs(sourceDir) {
 		return fmt.Errorf("walkSourceDir: expected absolute path, got source directory: %s", sourceDir)
 	}
 
-	return filepath.Walk(sourceDir, func(sourceRel string, info os.FileInfo, err error) error {
+	return filepath.Walk(sourceDir, func(sourceAbs string, info os.FileInfo, err error) error {
 		if err != nil {
-			fmt.Printf("Error walking directory %s: %v\n", sourceRel, err)
+			fmt.Printf("Error walking directory %s: %v\n", sourceAbs, err)
 			return err
 		}
 
 		// Skip the root directory (but walk into it)
-		isRootDir, err := fileutil.PathsEqual(sourceRel, sourceDir)
+		isRootDir, err := fileutil.PathsEqual(sourceAbs, sourceDir)
 		if err != nil {
 			return fmt.Errorf("failed to compare paths: %w", err)
 		}
@@ -130,66 +176,19 @@ func walkSourceDir(sourceDir string, targetDir string, ignoreList []string, hand
 		}
 
 		// Ignore symlinks in the source directory
-		if fileutil.IsSymlink(sourceRel) {
+		if fileutil.IsSymlink(sourceAbs) {
 			return nil
 		}
 
-		var targetState FileState
-
-		// Ignore any directories or files in the ignore list
-		if matched, err := fileutil.MatchesPatterns(info.Name(), ignoreList); err != nil {
-			return fmt.Errorf("error checking ignore patterns: %v", err)
-		} else if matched {
-			targetState = Ignore
-		}
-
-		// Get absolute paths
-		targetAbs := filepath.Join(targetDir, sourceRel)
-		sourceAbs := filepath.Join(sourceRel, sourceRel)
-
-		// Check if the target exists
-		if !fileutil.PathExists(targetAbs) {
-			targetState = Missing
-		} else {
-			// Check if the target is a symlink or not
-			if fileutil.IsSymlink(targetAbs) {
-				// Check if the target is linked to the correct place
-				linked, _ := fileutil.IsSymlinkPointingTo(targetAbs, sourceAbs)
-				if linked {
-					targetState = AlreadyLinked
-				} else {
-					linkTarget, _ := os.Readlink(targetAbs)
-					linkedInSource, _ := fileutil.IsChildPath(linkTarget, sourceDir)
-					if linkedInSource {
-						targetState = MislinkedInternal
-					} else {
-						targetState = MislinkedExternal
-					}
-				}
-			} else {
-				var bool sameContents
-				if fileutil.IsDir(targetAbs) {
-					sameContents, _ = fileutil.CompareFileHashes(sourceAbs, targetAbs)
-				} else {
-					sameContents, _ = fileutil.CompareFileHashes(sourceAbs, targetAbs)
-				}
-				if sameContents {
-					targetState = ExistsIdentical
-				} else {
-					targetState = ExistsModified
-				}
-			}
-		}
-
-		if err := handler(sourceRel, info, targetState); err != nil {
+		sourceRel, _ := filepath.Rel(sourceDir, sourceAbs)
+		targetState, err := determineTargetState(sourceDir, targetDir, sourceRel, ignoreList)
+		if err != nil {
 			return err
 		}
 
-		if targetState == Ignore {
-			if info.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
+		targetAbs := filepath.Join(targetDir, sourceRel)
+		if err := handler(sourceRel, targetAbs, targetState); err != nil {
+			return err
 		}
 
 		// Skip walking into subdirectories (whole directories are linked)
@@ -198,7 +197,6 @@ func walkSourceDir(sourceDir string, targetDir string, ignoreList []string, hand
 		}
 
 		return nil
-
 	})
 }
 
@@ -221,13 +219,13 @@ func createSymlinks(sourceDir, targetDir string, force, createDirs, confirm bool
 		return fmt.Errorf("createSymlinks: expected absolute path, got target directory: %s", targetDir)
 	}
 
-	err := walkSourceDir(sourceDir, ignoreList, func(sourceAbs string, info os.FileInfo, sourceRel string, shouldIgnore bool) error {
+	err := walkSourceDir(sourceDir, targetDir, ignoreList, func(sourceRel, targetAbs string, targetState TargetState) error {
 
-		if shouldIgnore {
+		if targetState == Ignore {
 			return nil
 		}
 
-		targetAbs := filepath.Join(targetDir, sourceRel)
+		sourceAbs := filepath.Join(sourceDir, sourceRel)
 
 		// Create the symlink if nothing exists there
 		if !fileutil.PathExists(targetAbs) {
@@ -314,13 +312,13 @@ func removeSymlinks(sourceDir, targetDir string, ignoreList []string, confirm bo
 		return fmt.Errorf("removeSymlinks: expected absolute path, got target directory: %s", targetDir)
 	}
 
-	err := walkSourceDir(sourceDir, ignoreList, func(sourceAbs string, info os.FileInfo, sourceRel string, shouldIgnore bool) error {
+	err := walkSourceDir(sourceDir, targetDir, ignoreList, func(sourceRel, targetAbs string, targetState TargetState) error {
 
-		if shouldIgnore {
+		if targetState == Ignore {
 			return nil
 		}
 
-		targetAbs := filepath.Join(targetDir, sourceRel)
+		sourceAbs := filepath.Join(sourceDir, sourceRel)
 
 		// Skip non-symlink files (we only want symlinks)
 		if !fileutil.IsSymlink(targetAbs) {
@@ -356,7 +354,7 @@ type Stats struct {
 	Ignored           int
 }
 
-func gatherStats(sourceDir string, targetDir string, ignoreList []string) (Stats, error) {
+func gatherStats(sourceDir, targetDir string, ignoreList []string) (Stats, error) {
 	stats := Stats{}
 
 	// Ensure sourceDir and targetDir are valid
@@ -367,56 +365,27 @@ func gatherStats(sourceDir string, targetDir string, ignoreList []string) (Stats
 		return stats, fmt.Errorf("gatherStats: expected absolute path, got target directory: %s", targetDir)
 	}
 
-	err := walkSourceDir(sourceDir, ignoreList, func(sourceAbs string, info os.FileInfo, sourceRel string, shouldIgnore bool) error {
+	err := walkSourceDir(sourceDir, targetDir, ignoreList, func(sourceRel, targetAbs string, targetState TargetState) error {
 
-		targetAbs := filepath.Join(targetDir, sourceRel)
-
-		if shouldIgnore {
+		switch targetState {
+		case Ignore:
 			stats.Ignored++
-			return nil
-		}
-
-		// Check if the target path exists for this source
-		// IMPORTANT: returns if a symlink!
-		if !fileutil.PathExists(targetAbs) {
+		case Missing:
 			stats.NoTarget++
 			stats.Unlinked++
-			sugar.Debugf("Target path %s does not exist\n", targetAbs)
-			return nil
-		}
-
-		// Check if it is a symlink
-		isLink := fileutil.IsSymlink(targetAbs)
-		if !isLink {
-			different, err := fileutil.CompareFileHashes(sourceAbs, targetAbs)
-			if err != nil {
-				fmt.Printf("Error comparing files: %v\n", err)
-			} else if different {
-				stats.DifferentContents++
-			} else {
-				stats.SameContents++
-			}
-			stats.Unlinked++
-			return nil
-		}
-
-		// Target is a symlink, check if it is linked to the source
-		targetDest, err := os.Readlink(targetAbs)
-		if err != nil {
-			return fmt.Errorf("error reading symlink: %v", err)
-		}
-		targetDest, _ = fileutil.ExpandPath(targetDest)
-
-		correctSource := targetDest == sourceAbs
-		if correctSource {
-			if fileutil.IsDir(targetDest) {
-				stats.LinkedDirs++
-			} else {
-				stats.LinkedFiles++
-			}
-		} else {
+		case AlreadyLinked:
+			stats.LinkedDirs++
+			stats.LinkedFiles++
+		case MislinkedInternal:
 			stats.IncorrectSymlink++
-			stats.Unlinked++
+		case MislinkedExternal:
+			stats.IncorrectSymlink++
+		case ExistsIdentical:
+			stats.SameContents++
+		case ExistsModified:
+			stats.DifferentContents++
+		default:
+			// Handle unexpected state
 		}
 
 		return nil
@@ -441,7 +410,7 @@ func printStats(sourceDir string, targetDir string, ignore []string) {
 	if err != nil {
 		sugar.Fatalf("Error gathering stats: %v", err)
 	}
-	fmt.Printf("Displaying statistics for linking %s\n\n", linkString(sourceDir, targetDir))
+	fmt.Printf("Displaying statistics for linking %s\n\n", linkString(targetDir, sourceDir))
 	rows := [][2]string{
 		{"Linked files", green(stats.LinkedFiles)},
 		{"Linked directories", green(stats.LinkedDirs)},
