@@ -1,9 +1,6 @@
-<h1>
-ghostow
-<img src="./media/ghostow-logo.png" alt="Description" height="60" />
-</h1>
+# lnkit
 
-`ghostow` is a modern alternative to [GNU Stow](https://www.gnu.org/software/stow/), built in Go. It manages symbolic links across directories, making it ideal for organizing dotfiles, scripts, or any structured file collections. Like its namesake, `ghostow` works quietly in the background, linking your files exactly where they need to be—your very own ghost in the shell. 👻
+`lnkit` is a modern, cross-platform tool box for managing symlinks, built in Go. It manages symbolic links across directories, making it ideal for organizing dotfiles, scripts, or any structured file collections. Like its namesake, `lnkit` works quietly in the background, linking your files exactly where they need to be—your very own ghost in the shell. 👻
 
 Much like with stow, there are two primary directories involved:
 
@@ -12,13 +9,13 @@ Much like with stow, there are two primary directories involved:
 
 | **Command**        | **Description**                                                        | **Implementation** |
 | ------------------ | ---------------------------------------------------------------------- | ------------------ |
-| `gstow link`       | Creates symlinks in the target directory, pointing back to the source. | ✓                 |
-| `gstow unlink`     | Removes symlinks in the target directory.                              | ✓                 |
-| `gstow stats`      | Displays statistics about the current symlinks and their statuses.     | ✓                 |
-| `gstow clean`      | Removes broken or orphaned symlinks from the target directory.         | ✕                 |
-| `gstow relativize` | Convert absolute symlink to relative                                   | ✕                 |
+| `lnk link`       | Creates symlinks in the target directory, pointing back to the source. | ✓                 |
+| `lnk unlink`     | Removes symlinks in the target directory.                              | ✓                 |
+| `lnk stats`      | Displays statistics about the current symlinks and their statuses.     | ✓                 |
+| `lnk clean`      | Removes broken or orphaned symlinks from the target directory.         | ✕                 |
+| `lnk relativize` | Convert absolute symlink to relative                                   | ✕                 |
 
-Here are the default settings for a `ghostow.toml` configuration file:
+Here are the default settings for a `lnkit.toml` configuration file:
 
 ```toml
 [options]

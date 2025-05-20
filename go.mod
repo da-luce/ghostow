@@ -1,4 +1,4 @@
-module ghostow
+module lnkit 
 
 go 1.21.4
 
