@@ -227,73 +227,72 @@ func createSymlinks(sourceDir, targetDir string, force, createDirs, confirm bool
 
 		sourceAbs := filepath.Join(sourceDir, sourceRel)
 
-		// Create the symlink if nothing exists there
-		if !fileutil.PathExists(targetAbs) {
-			sugar.Debugf("No target found, creating link %s", linkString(targetAbs, sourceAbs))
+		// TODO: factor this out to be more reusable
+		switch targetState {
+		case Ignore, AlreadyLinked:
+		case Missing:
+			sugar.Debugf("Creating link %s", linkString(targetAbs, sourceAbs))
 			symlink(sourceAbs, targetAbs, createDirs)
 			return nil
-		}
-
-		// Track the target file
-		targetDest := targetAbs
-
-		// If the target is a symlink, check if it's already correct
-		green := color.New(color.FgGreen).SprintFunc()
-		if fileutil.IsSymlink(targetAbs) {
-			linked, err := fileutil.IsSymlinkPointingTo(targetAbs, sourceAbs)
-			if err != nil {
-				sugar.Debugf("Failed to verify symlink %s: %v", linkString(targetAbs, sourceAbs), err)
-			} else if linked {
-				sugar.Infof("%s%s", green("Correct symlink already exists: "), linkString(targetAbs, sourceAbs))
-				return nil
-			} else {
-				linkTarget, err := os.Readlink(targetAbs)
-				if err != nil {
-					return err
-				}
-				targetDest, err := filepath.Abs(linkTarget)
-				if err != nil {
-					return err
-				}
-				// Dereference the link
-				sugar.Debugf("Target %s does not point to source, it points to %s", targetAbs, targetDest)
-
+		case MislinkedInternal:
+			sugar.Debugf("Target file is broken. Creating correct symlink...")
+			if err := os.RemoveAll(targetAbs); err != nil {
+				return fmt.Errorf("failed to remove existing file %s: %w", targetAbs, err)
 			}
-		}
+			symlink(sourceAbs, targetAbs, createDirs)
+			return nil
 
-		// A file is already there, check if it has the same content
-		same, _ := fileutil.CompareFileHashes(sourceAbs, targetDest)
-		if same {
+		case MislinkedExternal:
+			if force {
+				sugar.Infof("Overwriting existing file at: ", targetAbs)
+				if err := os.RemoveAll(targetAbs); err != nil {
+					return fmt.Errorf("failed to remove existing file %s: %w", targetAbs, err)
+				}
+			} else {
+				if stringutil.AskForConfirmation("Preview diff of existing file at " + targetAbs + "?") {
+					PreviewDiff(sourceAbs, targetAbs)
+				}
+				if stringutil.AskForConfirmation("Delete existing file at " + targetAbs + "?") {
+					if err := os.RemoveAll(targetAbs); err != nil {
+						return fmt.Errorf("failed to remove existing file %s: %w", targetAbs, err)
+					}
+				} else {
+					fmt.Printf("Skipped: %s\n", targetAbs)
+					return nil
+				}
+			}
+
+		case ExistsIdentical:
 			sugar.Debugf("Target file has the same content. Creating correct symlink...")
 			if err := os.RemoveAll(targetAbs); err != nil {
 				return fmt.Errorf("failed to remove existing file %s: %w", targetAbs, err)
 			}
 			symlink(sourceAbs, targetAbs, createDirs)
 			return nil
-		}
 
-		sugar.Debugf("Target file %s has different content than source %s", targetAbs, sourceAbs)
-		if force {
-			sugar.Infof("Overwriting existing file at: ", targetAbs)
-			if err := os.RemoveAll(targetAbs); err != nil {
-				return fmt.Errorf("failed to remove existing file %s: %w", targetAbs, err)
-			}
-		} else {
-			if stringutil.AskForConfirmation("Preview diff of existing file at " + targetAbs + "?") {
-				PreviewDiff(sourceAbs, targetAbs)
-			}
-			if stringutil.AskForConfirmation("Delete existing file at " + targetAbs + "?") {
+		case ExistsModified:
+			if force {
+				sugar.Infof("Overwriting existing file at: ", targetAbs)
 				if err := os.RemoveAll(targetAbs); err != nil {
 					return fmt.Errorf("failed to remove existing file %s: %w", targetAbs, err)
 				}
 			} else {
-				fmt.Printf("Skipped: %s\n", targetAbs)
-				return nil
+				if stringutil.AskForConfirmation("Preview diff of existing file at " + targetAbs + "?") {
+					PreviewDiff(sourceAbs, targetAbs)
+				}
+				if stringutil.AskForConfirmation("Delete existing file at " + targetAbs + "?") {
+					if err := os.RemoveAll(targetAbs); err != nil {
+						return fmt.Errorf("failed to remove existing file %s: %w", targetAbs, err)
+					}
+				} else {
+					fmt.Printf("Skipped: %s\n", targetAbs)
+					return nil
+				}
 			}
-		}
 
-		// Create the symlink
-		symlink(sourceAbs, targetAbs, createDirs)
+		default:
+			// Handle unexpected state
+		}
 
 		return nil
 	})
@@ -314,27 +313,39 @@ func removeSymlinks(sourceDir, targetDir string, ignoreList []string, confirm bo
 
 	err := walkSourceDir(sourceDir, targetDir, ignoreList, func(sourceRel, targetAbs string, targetState TargetState) error {
 
-		if targetState == Ignore {
-			return nil
-		}
-
+		// TODO: factor this out to be more reusable
 		sourceAbs := filepath.Join(sourceDir, sourceRel)
 
-		// Skip non-symlink files (we only want symlinks)
-		if !fileutil.IsSymlink(targetAbs) {
-			return nil
-		}
+		switch targetState {
+		case Ignore, Missing, ExistsIdentical, ExistsModified:
+		case AlreadyLinked, MislinkedInternal:
+			// Ask for confirmation if needed
+			if confirm && !stringutil.AskForConfirmation(fmt.Sprintf("Remove symlink %s?", linkString(targetAbs, sourceAbs))) {
+				return nil
+			}
 
-		// Ask for confirmation if needed
-		if confirm && !stringutil.AskForConfirmation(fmt.Sprintf("Remove symlink %s?", linkString(targetAbs, sourceAbs))) {
-			return nil
-		}
+			// Remove the symlink
+			if err := os.Remove(targetAbs); err != nil {
+				sugar.Infof("Error removing symlink %s: %v", linkString(targetAbs, sourceAbs), err)
+			} else {
+				sugar.Infof("Removed symlink: %s", linkString(targetAbs, sourceAbs))
+			}
 
-		// Remove the symlink
-		if err := os.Remove(targetAbs); err != nil {
-			sugar.Infof("Error removing symlink %s: %v", linkString(targetAbs, sourceAbs), err)
-		} else {
-			sugar.Infof("Removed symlink: %s", linkString(targetAbs, sourceAbs))
+		case MislinkedExternal:
+			// Ask for confirmation if needed
+			if confirm && !stringutil.AskForConfirmation(fmt.Sprintf("Remove symlink %s?", linkString(targetAbs, sourceAbs))) {
+				return nil
+			}
+
+			// Remove the symlink
+			if err := os.Remove(targetAbs); err != nil {
+				sugar.Infof("Error removing symlink %s: %v", linkString(targetAbs, sourceAbs), err)
+			} else {
+				sugar.Infof("Removed symlink: %s", linkString(targetAbs, sourceAbs))
+			}
+
+		default:
+			// Handle unexpected state
 		}
 
 		return nil
