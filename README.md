@@ -3,7 +3,7 @@ ghostow
 <img src="./media/ghostow-logo.png" alt="Description" height="60" />
 </h1>
 
-`ghostow` is a modern alternative to [GNU Stow](https://www.gnu.org/software/stow/), built in Go. It manages symbolic links across directories, making it ideal for organizing dotfiles, scripts, or any structured file collections. Like its namesake, `ghostow` works quietly in the background, linking your files exactly where they need to be—your very own ghost in the machine. 👻
+`ghostow` is a modern alternative to [GNU Stow](https://www.gnu.org/software/stow/), built in Go. It manages symbolic links across directories, making it ideal for organizing dotfiles, scripts, or any structured file collections. Like its namesake, `ghostow` works quietly in the background, linking your files exactly where they need to be—your very own ghost in the shell. 👻
 
 Much like with stow, there are two primary directories involved:
 

@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -93,6 +94,85 @@ func CompareFileHashes(file1, file2 string) (bool, error) {
 
 	// Compare the hashes
 	return bytes.Equal(hash1, hash2), nil
+}
+
+// CompareDirs compares the contents of two directories by relative paths and file content.
+// It returns a list of differences and an error if one occurred during comparison.
+func CompareDirHashes(dir1, dir2 string) ([]string, error) {
+	var diffs []string
+
+	// Walk dir1 and compare each file to its counterpart in dir2
+	err := filepath.WalkDir(dir1, func(path1 string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+
+		relPath, err := filepath.Rel(dir1, path1)
+		if err != nil {
+			return err
+		}
+
+		path2 := filepath.Join(dir2, relPath)
+
+		// Check if file exists in dir2
+		info2, err := os.Stat(path2)
+		if os.IsNotExist(err) {
+			diffs = append(diffs, fmt.Sprintf("Missing in dir2: %s", relPath))
+			return nil
+		} else if err != nil {
+			return err
+		}
+
+		// Make sure it's a file
+		if info2.IsDir() {
+			diffs = append(diffs, fmt.Sprintf("Type mismatch (dir in dir2): %s", relPath))
+			return nil
+		}
+
+		// Compare file contents
+		same, err := CompareFileHashes(path1, path2)
+		if err != nil {
+			return err
+		}
+		if !same {
+			diffs = append(diffs, fmt.Sprintf("Contents differ: %s", relPath))
+		}
+
+		return nil
+	})
+	if err != nil {
+		return diffs, err
+	}
+
+	// Walk dir2 to find files not in dir1
+	err = filepath.WalkDir(dir2, func(path2 string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			return nil
+		}
+
+		relPath, err := filepath.Rel(dir2, path2)
+		if err != nil {
+			return err
+		}
+
+		path1 := filepath.Join(dir1, relPath)
+		if _, err := os.Stat(path1); os.IsNotExist(err) {
+			diffs = append(diffs, fmt.Sprintf("Extra in dir2: %s", relPath))
+		}
+
+		return nil
+	})
+	if err != nil {
+		return diffs, err
+	}
+
+	return diffs, nil
 }
 
 // MatchesAnyPattern checks if `value` matches any of the patterns in the list.

@@ -86,6 +86,18 @@ func PreviewDiff(source, target string) error {
 	return cmd.Run()
 }
 
+type FileState int
+
+const (
+	Ignore            FileState = iota // File should be ignored
+	AlreadyLinked                      // Correct symlink exists
+	Missing                            // No file or link exists at target
+	MislinkedInternal                  // Symlink exists but points to wrong place in source dir
+	MislinkedExternal                  // Symlink exists but points outside source dir
+	ExistsIdentical                    // Regular file or dir exists, content matches source
+	ExistsModified                     // Regular file or dir exists, content differs from source
+)
+
 // Common logic for walking the source directory
 // walkSourceDir walks the sourceDir and calls handler for each non-ignored file or directory.
 //
@@ -95,21 +107,21 @@ func PreviewDiff(source, target string) error {
 // - handler: callback function called with each file's absolute path, os.FileInfo, and relative path.
 //
 // The walk skips the root directory itself and any ignored files or folders.
-func walkSourceDir(sourceDir string, ignoreList []string, handler func(source string, info os.FileInfo, relativePath string, shouldIgnore bool) error) error {
+func walkSourceDir(sourceDir string, targetDir string, ignoreList []string, handler func(sourceRel string, info os.FileInfo, state FileState) error) error {
 
 	// Ensure sourceDir is valid
 	if !filepath.IsAbs(sourceDir) {
 		return fmt.Errorf("walkSourceDir: expected absolute path, got source directory: %s", sourceDir)
 	}
 
-	return filepath.Walk(sourceDir, func(pathRel string, info os.FileInfo, err error) error {
+	return filepath.Walk(sourceDir, func(sourceRel string, info os.FileInfo, err error) error {
 		if err != nil {
-			fmt.Printf("Error walking directory %s: %v\n", pathRel, err)
+			fmt.Printf("Error walking directory %s: %v\n", sourceRel, err)
 			return err
 		}
 
 		// Skip the root directory (but walk into it)
-		isRootDir, err := fileutil.PathsEqual(pathRel, sourceDir)
+		isRootDir, err := fileutil.PathsEqual(sourceRel, sourceDir)
 		if err != nil {
 			return fmt.Errorf("failed to compare paths: %w", err)
 		}
@@ -117,37 +129,72 @@ func walkSourceDir(sourceDir string, ignoreList []string, handler func(source st
 			return nil
 		}
 
-		// Ignore any directories or files in the ignore list
-		// We tell the caller if this item should be ignored (sometimes we want to track this, like in stats)
-		shouldIgnore, err := fileutil.MatchesPatterns(info.Name(), ignoreList)
-		if err != nil {
-			return fmt.Errorf("error checking ignore patterns: %v", err)
-		}
-
 		// Ignore symlinks in the source directory
-		if fileutil.IsSymlink(pathRel) {
+		if fileutil.IsSymlink(sourceRel) {
 			return nil
 		}
 
-		// Handle the current item in the source directory
-		relativePath, err := filepath.Rel(sourceDir, pathRel)
-		if err != nil {
-			return fmt.Errorf("failed to compute relative path: %w", err)
+		var targetState FileState
+
+		// Ignore any directories or files in the ignore list
+		if matched, err := fileutil.MatchesPatterns(info.Name(), ignoreList); err != nil {
+			return fmt.Errorf("error checking ignore patterns: %v", err)
+		} else if matched {
+			targetState = Ignore
 		}
 
-		if err := handler(pathRel, info, relativePath, shouldIgnore); err != nil {
+		// Get absolute paths
+		targetAbs := filepath.Join(targetDir, sourceRel)
+		sourceAbs := filepath.Join(sourceRel, sourceRel)
+
+		// Check if the target exists
+		if !fileutil.PathExists(targetAbs) {
+			targetState = Missing
+		} else {
+			// Check if the target is a symlink or not
+			if fileutil.IsSymlink(targetAbs) {
+				// Check if the target is linked to the correct place
+				linked, _ := fileutil.IsSymlinkPointingTo(targetAbs, sourceAbs)
+				if linked {
+					targetState = AlreadyLinked
+				} else {
+					linkTarget, _ := os.Readlink(targetAbs)
+					linkedInSource, _ := fileutil.IsChildPath(linkTarget, sourceDir)
+					if linkedInSource {
+						targetState = MislinkedInternal
+					} else {
+						targetState = MislinkedExternal
+					}
+				}
+			} else {
+				var bool sameContents
+				if fileutil.IsDir(targetAbs) {
+					sameContents, _ = fileutil.CompareFileHashes(sourceAbs, targetAbs)
+				} else {
+					sameContents, _ = fileutil.CompareFileHashes(sourceAbs, targetAbs)
+				}
+				if sameContents {
+					targetState = ExistsIdentical
+				} else {
+					targetState = ExistsModified
+				}
+			}
+		}
+
+		if err := handler(sourceRel, info, targetState); err != nil {
 			return err
 		}
 
-		if shouldIgnore {
+		if targetState == Ignore {
 			if info.IsDir() {
 				return filepath.SkipDir
 			}
 			return nil
 		}
 
+		// Skip walking into subdirectories (whole directories are linked)
 		if info.IsDir() {
-			return filepath.SkipDir // Skip walking into subdirectories (whole directories are linked)
+			return filepath.SkipDir
 		}
 
 		return nil
