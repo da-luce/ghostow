@@ -1,10 +1,12 @@
-# lnkit
+<h1>
+  lnkit
+  <img src="./media/toolbox.png" alt="Description" height="40" style="vertical-center: bottom;" />
+</h1>
 
-`lnkit` is a modern, cross-platform tool box for managing symlinks, built in Go. It manages symbolic links across directories, making it ideal for organizing dotfiles, scripts, or any structured file collections. Like its namesake, `lnkit` works quietly in the background, linking your files exactly where they need to be—your very own ghost in the shell. 👻
 
-Much like with stow, there are two primary directories involved:
+`lnkit` is a modern, cross-platform tool box for managing symlinks, built in Go. It simplifies the creation, maintenance, and organization of symbolic links, making it easier to manage complex file systems. Designed for speed and reliability, `lnkit` works seamlessly across different operating systems to streamline your workflow.
 
-- Source Directory: This is the directory where your files (such as configuration files, scripts, etc.) reside. A `ghostow.toml` file must be present to document the fact that `ghostow` is managing this directory.
+- Source Directory: This is the directory where your files (such as configuration files, scripts, etc.) reside. A `lnkit.toml` file must be present to document the fact that `lnkit` is managing this directory.
 - Target Directory: This is where the symlinks will point to. The files in the target directory are what the symlinks in the source directory will reference.
 
 | **Command**        | **Description**                                                        | **Implementation** |
@@ -35,8 +37,7 @@ log_level = "info"  # Log verbosity level. Options: "debug", "info", "warn", "er
 
 ## Sources
 
-- [Ghost Image](https://pixabay.com/vectors/ghosts-halloween-spooky-cute-haunt-1775548/)
-- [Box Image](https://pixabay.com/vectors/package-cardboard-box-delivery-8856091/)
+- [Tool Image by Freepik](https://www.freepik.com/icon/tool-box_15996443)
 
 ## Why not use a bare Git repo for dotfiles?
 

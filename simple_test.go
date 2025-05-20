@@ -1,7 +1,7 @@
 package main
 
 import (
-	"ghostow/fileutil"
+	"lnkit/fileutil"
 	"os"
 	"path/filepath"
 	"testing"
