@@ -111,11 +111,13 @@ func determineTargetState(sourceDir, targetDir, sourceRel string, ignoreList []s
 		return Ignore, nil
 	}
 
+	// Target path doesn't exist
 	if !fileutil.PathExists(targetAbs) {
 		sugar.Debugf("No target exists: %s", targetAbs)
 		return Missing, nil
 	}
 
+	// Target is a symlink
 	if fileutil.IsSymlink(targetAbs) {
 		linked, _ := fileutil.IsSymlinkPointingTo(targetAbs, sourceAbs)
 		if linked {
@@ -133,7 +135,7 @@ func determineTargetState(sourceDir, targetDir, sourceRel string, ignoreList []s
 		return MislinkedExternal, nil
 	}
 
-	// Not a symlink — check file or dir content
+	// Not a symlink—check file or dir content
 	// FIXME: does this work with dirs?
 	same, _ := fileutil.CompareFileHashes(sourceAbs, targetAbs)
 	if same {
@@ -180,12 +182,14 @@ func walkSourceDir(sourceDir string, targetDir string, ignoreList []string, hand
 			return nil
 		}
 
+		// Determine the state of the target
 		sourceRel, _ := filepath.Rel(sourceDir, sourceAbs)
 		targetState, err := determineTargetState(sourceDir, targetDir, sourceRel, ignoreList)
 		if err != nil {
 			return err
 		}
 
+		// Handle
 		targetAbs := filepath.Join(targetDir, sourceRel)
 		if err := handler(sourceRel, targetAbs, targetState); err != nil {
 			return err
@@ -200,14 +204,6 @@ func walkSourceDir(sourceDir string, targetDir string, ignoreList []string, hand
 	})
 }
 
-func symlink(sourceAbs string, targetAbs string, createDirs bool) {
-	if err := fileutil.CreateSymlink(sourceAbs, targetAbs, createDirs); err != nil {
-		sugar.Infof("Error creating symlink %s: %v", linkString(targetAbs, sourceAbs), err)
-	} else {
-		sugar.Infof("Linked %s", linkString(targetAbs, sourceAbs))
-	}
-}
-
 // Walk the source directory and process symlinks
 func createSymlinks(sourceDir, targetDir string, force, createDirs, confirm bool, ignoreList []string) error {
 
@@ -219,7 +215,15 @@ func createSymlinks(sourceDir, targetDir string, force, createDirs, confirm bool
 		return fmt.Errorf("createSymlinks: expected absolute path, got target directory: %s", targetDir)
 	}
 
-	err := walkSourceDir(sourceDir, targetDir, ignoreList, func(sourceRel, targetAbs string, targetState TargetState) error {
+	link := func(sourceAbs string, targetAbs string, createDirs bool) {
+		if err := fileutil.CreateSymlink(sourceAbs, targetAbs, createDirs); err != nil {
+			sugar.Infof("Error creating symlink %s: %v", linkString(targetAbs, sourceAbs), err)
+		} else {
+			sugar.Infof("Linked %s", linkString(targetAbs, sourceAbs))
+		}
+	}
+
+	handler := func(sourceRel, targetAbs string, targetState TargetState) error {
 
 		if targetState == Ignore {
 			return nil
@@ -231,15 +235,14 @@ func createSymlinks(sourceDir, targetDir string, force, createDirs, confirm bool
 		switch targetState {
 		case Ignore, AlreadyLinked:
 		case Missing:
-			sugar.Debugf("Creating link %s", linkString(targetAbs, sourceAbs))
-			symlink(sourceAbs, targetAbs, createDirs)
+			link(sourceAbs, targetAbs, createDirs)
 			return nil
 		case MislinkedInternal:
 			sugar.Debugf("Target file is broken. Creating correct symlink...")
 			if err := os.RemoveAll(targetAbs); err != nil {
 				return fmt.Errorf("failed to remove existing file %s: %w", targetAbs, err)
 			}
-			symlink(sourceAbs, targetAbs, createDirs)
+			link(sourceAbs, targetAbs, createDirs)
 			return nil
 
 		case MislinkedExternal:
@@ -267,7 +270,7 @@ func createSymlinks(sourceDir, targetDir string, force, createDirs, confirm bool
 			if err := os.RemoveAll(targetAbs); err != nil {
 				return fmt.Errorf("failed to remove existing file %s: %w", targetAbs, err)
 			}
-			symlink(sourceAbs, targetAbs, createDirs)
+			link(sourceAbs, targetAbs, createDirs)
 			return nil
 
 		case ExistsModified:
@@ -295,9 +298,9 @@ func createSymlinks(sourceDir, targetDir string, force, createDirs, confirm bool
 		}
 
 		return nil
-	})
+	}
 
-	return err
+	return walkSourceDir(sourceDir, targetDir, ignoreList, handler)
 }
 
 // Walk the target directory and remove symlinks
@@ -311,7 +314,15 @@ func removeSymlinks(sourceDir, targetDir string, ignoreList []string, confirm bo
 		return fmt.Errorf("removeSymlinks: expected absolute path, got target directory: %s", targetDir)
 	}
 
-	err := walkSourceDir(sourceDir, targetDir, ignoreList, func(sourceRel, targetAbs string, targetState TargetState) error {
+	unlink := func(sourceAbs, targetAbs string) {
+		if err := fileutil.RemoveSymlink(targetAbs); err != nil {
+			sugar.Infof("Error removing symlink %s: %v", linkString(targetAbs, sourceAbs), err)
+		} else {
+			sugar.Infof("Removed symlink: %s", linkString(targetAbs, sourceAbs))
+		}
+	}
+
+	handler := func(sourceRel, targetAbs string, targetState TargetState) error {
 
 		// TODO: factor this out to be more reusable
 		sourceAbs := filepath.Join(sourceDir, sourceRel)
@@ -319,39 +330,24 @@ func removeSymlinks(sourceDir, targetDir string, ignoreList []string, confirm bo
 		switch targetState {
 		case Ignore, Missing, ExistsIdentical, ExistsModified:
 		case AlreadyLinked, MislinkedInternal:
-			// Ask for confirmation if needed
-			if confirm && !stringutil.AskForConfirmation(fmt.Sprintf("Remove symlink %s?", linkString(targetAbs, sourceAbs))) {
-				return nil
-			}
-
-			// Remove the symlink
-			if err := os.Remove(targetAbs); err != nil {
-				sugar.Infof("Error removing symlink %s: %v", linkString(targetAbs, sourceAbs), err)
-			} else {
-				sugar.Infof("Removed symlink: %s", linkString(targetAbs, sourceAbs))
-			}
-
+			unlink(sourceAbs, targetAbs)
 		case MislinkedExternal:
+
 			// Ask for confirmation if needed
 			if confirm && !stringutil.AskForConfirmation(fmt.Sprintf("Remove symlink %s?", linkString(targetAbs, sourceAbs))) {
 				return nil
 			}
 
-			// Remove the symlink
-			if err := os.Remove(targetAbs); err != nil {
-				sugar.Infof("Error removing symlink %s: %v", linkString(targetAbs, sourceAbs), err)
-			} else {
-				sugar.Infof("Removed symlink: %s", linkString(targetAbs, sourceAbs))
-			}
+			unlink(sourceAbs, targetAbs)
 
 		default:
 			// Handle unexpected state
 		}
 
 		return nil
-	})
+	}
 
-	return err
+	return walkSourceDir(sourceDir, targetDir, ignoreList, handler)
 }
 
 type Stats struct {

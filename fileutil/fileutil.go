@@ -264,6 +264,27 @@ func CreateSymlink(source, dest string, createDirs bool) error {
 	return nil
 }
 
+// RemoveSymlink deletes a symlink at the given path if it exists and is a symlink.
+func RemoveSymlink(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // Nothing to do
+		}
+		return fmt.Errorf("failed to stat %s: %w", path, err)
+	}
+
+	if info.Mode()&os.ModeSymlink == 0 {
+		return fmt.Errorf("path %s is not a symlink", path)
+	}
+
+	if err := os.Remove(path); err != nil {
+		return fmt.Errorf("failed to remove symlink %s: %w", path, err)
+	}
+
+	return nil
+}
+
 // IsSymlinkPointingTo returns true if `path` is a symlink that points to `target`.
 // It resolves relative symlink targets to absolute paths for accurate comparison.
 func IsSymlinkPointingTo(symlink, target string) (bool, error) {
