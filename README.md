@@ -56,6 +56,71 @@ log_level = "info"  # Log verbosity level. Options: "debug", "info", "warn", "er
 - Want templating? Use Jinja2 (or a similar tool) as a separate step before linking your dotfiles,
 - The best setups empower _learning_ and creativity—they don’t force you into rigid workflows or obscure magic
 
+### Folding
+
+Folding refers to the process of replacing an entire directory with a single symlink, rather than linking its contents one by one.
+
+This behavior is useful when recursively linking configuration directories, but must be applied carefully to avoid overwriting meaningful data.
+
+The folding logic works as follows:
+
+- If recursion is disabled: folding doesn't apply — only the top-level directory or file is processed.
+- If recursion is enabled: consult the `--fold` flag to decide whether to replace the whole directory with a symlink.
+
+#### Example
+
+Assume you want to link the contents of  `~/.config/nvim` to `~/.dotfiles/.config/nvim`.
+```mermaid
+---
+config:
+  look: neo
+  theme: neutral
+---
+graph TD
+
+    subgraph CONFIG_FOLD [~/.config/ -- Folding]
+        Fa[~/.config/]-->Fb[nvim/]
+        Fa --> Ff[alactritty/]
+        Fa --> Fh[starship.toml]
+    end
+
+    subgraph CONFIG_NO_FOLD [~/.config/ - No Folding]
+        Ta[~/.config/]-->Tb[nvim/]
+        Tb --> Tc[init.lua]
+        Tb --> Td[plugins/]
+        Td --> Te[plugins.lua]
+
+        Ta --> Tf[alactritty/]
+        Tf --> Tg[alactritty.yml]
+
+        Ta --> Th[starship.toml]
+    end
+
+    subgraph DOTFILES [~/.dotfiles/config/]
+        Da[~/.dotfiles/config/]-->Db[nvim/]
+        Db --> Dc[init.lua]
+        Db --> Dd[plugins/]
+        Dd --> De[plugins.lua]
+
+        Da --> Df[alactritty/]
+        Df --> Dg[alactritty.yml]
+
+        Da --> Dh[starship.toml]
+    end
+
+    classDef symlink fill:#ccf,stroke:#00f,color:#00f
+    class Tc,Te,Tg,Th,Fb,Ff,Fh symlink
+
+    %% Add legend using invisible nodes
+    subgraph Legend [Key]
+        L1[Regular File or Dir]
+        L2[Symlink]:::symlink
+    end
+
+
+
+```
+
 ### `track`
 
 `lnk track` enables creating and maintaining dynamic symlinks that automatically update to point to the most relevant target based on a specified pattern and sorting criteria. For example, in an Obsidian vault, you might have a symlink `/journals/today` that always points to the daily note for the current date, making it easy to quickly access or open today’s journal entry. Similarly, for software development, a symlink like `/path/SDK/current` can be tracked to always point to the latest installed SDK version folder (e.g., SDK-1.9, SDK-1.10, SDK-2.0), saving you the hassle of manually updating the link whenever a new SDK version is installed. This feature supports flexible pattern matching, sorting (by version, time, or name), and even custom scripts to resolve targets, making it a powerful tool for managing "moving" symlinks that reflect evolving environments.
@@ -86,6 +151,10 @@ folders = ["Downloads", "Videos", "Documents"]
 pattern = ""              # Optional: Use glob pattern instead of explicit list
 recursive = false         # Optionally link contents instead of folders
 ```
+
+## Disambiguation 
+
+- GNU Stow links targe dir to source dir. Ln links tagret file to source file
 
 ## TODO
 

@@ -201,11 +201,11 @@ func walkSourceRec(sourceDir string, targetDir string, ignoreList []string, hand
 		}
 
 		// Handle this element. The handler decides that if this a dir, if we are to skip it
-		skip, err := handlerFunc(sourceAbs, targetAbs, targetState)
+		shouldRecurse, err := handlerFunc(sourceAbs, targetAbs, targetState)
 		if err != nil {
 			return err
 		}
-		if (skip || targetState == TargetIgnore) && info.IsDir() {
+		if (!shouldRecurse || targetState == TargetIgnore) && info.IsDir() {
 			return filepath.SkipDir
 		}
 
@@ -214,7 +214,7 @@ func walkSourceRec(sourceDir string, targetDir string, ignoreList []string, hand
 }
 
 // Walk the source directory and process symlinks
-func createSymlinks(sourceDir, targetDir string, force, createDirs, confirm bool, ignoreList []string) error {
+func createSymlinks(sourceDir, targetDir string, force, createDirs, confirm, recursive, fold bool, ignoreList []string) error {
 
 	// Ensure sourceDir and targetDir are valid
 	if !filepath.IsAbs(sourceDir) {
@@ -234,31 +234,53 @@ func createSymlinks(sourceDir, targetDir string, force, createDirs, confirm bool
 
 	handler := func(sourceRel, targetAbs string, targetState TargetState) (bool, error) {
 
-		if targetState == TargetIgnore {
-			return false, nil
+		sourceAbs := filepath.Join(sourceDir, sourceRel)
+		isRoot, _ := fileutil.PathsEqual(sourceAbs, sourceDir)
+
+		// If performing a recursive link, allow walking into subdirectories.
+		// Otherwise, skip walking deeper after processing the current item.
+		// This means:
+		// - For files: no recursion occurs regardless, so behavior is unaffected.
+		// - For directories:
+		//   - Non-recursive: we process the directory itself, but do not descend.
+		//   - Recursive: we process and descend into subdirectories.
+		//
+		// Effectively, this controls whether we recurse beyond the root directory.
+		shouldRecurse := false // Whether we should recurse into the dir
+		if recursive && (isRoot || !fold) {
+			shouldRecurse = true
 		}
 
-		sourceAbs := filepath.Join(sourceDir, sourceRel)
+		// Skip and don't recurse into ignored elements
+		if targetState == TargetIgnore {
+			shouldRecurse = false
+			return shouldRecurse, nil
+		}
+
+		// If not folding on recursive run and this a dir, don't link it!
+		if fileutil.IsDir(sourceAbs) && recursive && !fold {
+			return shouldRecurse, nil
+		}
 
 		// TODO: factor this out to be more reusable
 		switch targetState {
 		case TargetIgnore, TargetAlreadyLinked:
 		case TargetMissing:
 			link(sourceAbs, targetAbs, createDirs)
-			return false, nil
+			return shouldRecurse, nil
 		case TargetMislinkedInternal:
 			sugar.Debugf("Target file is broken. Creating correct symlink...")
 			if err := os.RemoveAll(targetAbs); err != nil {
-				return true, fmt.Errorf("failed to remove existing file %s: %w", targetAbs, err)
+				return shouldRecurse, fmt.Errorf("failed to remove existing file %s: %w", targetAbs, err)
 			}
 			link(sourceAbs, targetAbs, createDirs)
-			return false, nil
+			return shouldRecurse, nil
 
 		case TargetMislinkedExternal:
 			if force {
 				sugar.Infof("Overwriting existing file at: ", targetAbs)
 				if err := os.RemoveAll(targetAbs); err != nil {
-					return true, fmt.Errorf("failed to remove existing file %s: %w", targetAbs, err)
+					return shouldRecurse, fmt.Errorf("failed to remove existing file %s: %w", targetAbs, err)
 				}
 			} else {
 				if stringutil.AskForConfirmation("Preview diff of existing file at " + targetAbs + "?") {
@@ -266,27 +288,27 @@ func createSymlinks(sourceDir, targetDir string, force, createDirs, confirm bool
 				}
 				if stringutil.AskForConfirmation("Delete existing file at " + targetAbs + "?") {
 					if err := os.RemoveAll(targetAbs); err != nil {
-						return true, fmt.Errorf("failed to remove existing file %s: %w", targetAbs, err)
+						return shouldRecurse, fmt.Errorf("failed to remove existing file %s: %w", targetAbs, err)
 					}
 				} else {
 					fmt.Printf("Skipped: %s\n", targetAbs)
-					return false, nil
+					return shouldRecurse, nil
 				}
 			}
 
 		case TargetExistsIdentical:
 			sugar.Debugf("Target file has the same content. Creating correct symlink...")
 			if err := os.RemoveAll(targetAbs); err != nil {
-				return false, fmt.Errorf("failed to remove existing file %s: %w", targetAbs, err)
+				return shouldRecurse, fmt.Errorf("failed to remove existing file %s: %w", targetAbs, err)
 			}
 			link(sourceAbs, targetAbs, createDirs)
-			return false, nil
+			return shouldRecurse, nil
 
 		case TargetExistsModified:
 			if force {
 				sugar.Infof("Overwriting existing file at: ", targetAbs)
 				if err := os.RemoveAll(targetAbs); err != nil {
-					return false, fmt.Errorf("failed to remove existing file %s: %w", targetAbs, err)
+					return shouldRecurse, fmt.Errorf("failed to remove existing file %s: %w", targetAbs, err)
 				}
 			} else {
 				if stringutil.AskForConfirmation("Preview diff of existing file at " + targetAbs + "?") {
@@ -294,11 +316,11 @@ func createSymlinks(sourceDir, targetDir string, force, createDirs, confirm bool
 				}
 				if stringutil.AskForConfirmation("Delete existing file at " + targetAbs + "?") {
 					if err := os.RemoveAll(targetAbs); err != nil {
-						return false, fmt.Errorf("failed to remove existing file %s: %w", targetAbs, err)
+						return shouldRecurse, fmt.Errorf("failed to remove existing file %s: %w", targetAbs, err)
 					}
 				} else {
 					fmt.Printf("Skipped: %s\n", targetAbs)
-					return false, nil
+					return shouldRecurse, nil
 				}
 			}
 
@@ -306,7 +328,7 @@ func createSymlinks(sourceDir, targetDir string, force, createDirs, confirm bool
 			// Handle unexpected state
 		}
 
-		return false, nil
+		return shouldRecurse, nil
 	}
 
 	return walkSourceRec(sourceDir, targetDir, ignoreList, handler)
@@ -386,6 +408,7 @@ func gatherStats(sourceDir, targetDir string, ignoreList []string) (Stats, error
 		switch targetState {
 		case TargetIgnore:
 			stats.Ignored++
+			return true, nil // If the target is a directory, don't go into it
 		case TargetMissing:
 			stats.NoTarget++
 			stats.Unlinked++
@@ -404,18 +427,11 @@ func gatherStats(sourceDir, targetDir string, ignoreList []string) (Stats, error
 			// Handle unexpected state
 		}
 
-		return false, nil
+		return true, nil
 
 	})
 
 	return stats, err
-}
-
-type Args struct {
-	Command    string `arg:"positional,required" help:"command to run (link, unstow, stats)"`
-	ConfigFile string `arg:"-c,--config" help:"path to config file" default:"lnkit.toml"`
-	TargetDir  string `arg:"-t,--target" help:"Override target directory"`
-	SourceDir  string `arg:"-s,--source" help:"Override source directory"`
 }
 
 func printStats(sourceDir string, targetDir string, ignore []string) {
@@ -442,6 +458,19 @@ func printStats(sourceDir string, targetDir string, ignore []string) {
 }
 
 const ignoreFile = ".lnkitignore"
+
+type Args struct {
+	Command    string `arg:"positional,required" help:"command to run (link, unstow, stats)"`
+	ConfigFile string `arg:"-c,--config" help:"path to config file" default:"lnkit.toml"`
+	TargetDir  string `arg:"-t,--target" help:"Override target directory"`
+	SourceDir  string `arg:"-s,--source" help:"Override source directory"`
+	Recursive  bool   `arg:"--rec" help:"Recursively process nested directories"`
+	Fold       bool   `arg:"--fold" help:"Link whole directories where applicable"`
+}
+
+var recursive = false
+var fold = false
+var create_dirs = true
 
 func main() {
 
@@ -526,7 +555,7 @@ func main() {
 	// Handle arguments
 	switch args.Command {
 	case "link":
-		if err := createSymlinks(sourceDir, targetDir, cfg.Options.Force, cfg.Options.CreateDirs, cfg.Options.Confirm, cfg.Options.Ignore); err != nil {
+		if err := createSymlinks(sourceDir, targetDir, cfg.Options.Force, cfg.Options.CreateDirs, cfg.Options.Confirm, args.Recursive, args.Fold, cfg.Options.Ignore); err != nil {
 			sugar.Fatalf("Error linking: %v", err)
 		}
 
