@@ -42,7 +42,7 @@ var defaultConfig = Config{
 		CreateDirs: true,
 		SourceDir:  ".",
 		TargetDir:  "~",
-		Ignore:     []string{"lnkit.toml", ".lnignore", "*.git"},
+		Ignore:     []string{"lnkit.toml", ".lnkitignore", "*.git"},
 		LogLevel:   "debug",
 	},
 }
@@ -87,18 +87,22 @@ func PreviewDiff(source, target string) error {
 	return cmd.Run()
 }
 
+// TargetState represents a higher-level state derived from LinkState,
+// with awareness of source directories, useful for recursive link operations.
 type TargetState int
 
 const (
-	Ignore            TargetState = iota // File should be ignored
-	AlreadyLinked                        // Correct symlink exists
-	Missing                              // No file or link exists at target
-	MislinkedInternal                    // Symlink exists but points to wrong place in source dir
-	MislinkedExternal                    // Symlink exists but points outside source dir
-	ExistsIdentical                      // Regular file or dir exists, content matches source
-	ExistsModified                       // Regular file or dir exists, content differs from source
+	TargetIgnore            TargetState = iota // Target should be ignored (e.g., explicitly excluded)
+	TargetAlreadyLinked                        // Correct symlink already exists; no action needed
+	TargetMissing                              // No file/link exists; symlink should be created
+	TargetMislinkedInternal                    // Symlink points to the wrong place within the managed source set
+	TargetMislinkedExternal                    // Symlink points outside the managed sources; should be corrected
+	TargetExistsIdentical                      // A regular file/dir exists and matches the source; may be replaced with a link
+	TargetExistsModified                       // A regular file/dir exists and differs from the source; replacement may overwrite changes
 )
 
+// MapLinkStateToTargetState maps a basic LinkState to an appropriate TargetState.
+// More advanced versions can incorporate context like source directories.
 func determineTargetState(sourceDir, targetDir, sourceRel string, ignoreList []string) (TargetState, error) {
 
 	// Get absolute paths
@@ -107,48 +111,52 @@ func determineTargetState(sourceDir, targetDir, sourceRel string, ignoreList []s
 
 	// Ignore any directories or files in the ignore list
 	if matched, err := fileutil.MatchesPatterns(filepath.Base(sourceAbs), ignoreList); err != nil {
-		return Ignore, fmt.Errorf("error checking ignore patterns: %v", err)
+		return TargetIgnore, fmt.Errorf("error checking ignore patterns: %v", err)
 	} else if matched {
-		return Ignore, nil
+		sugar.Debugf("Ignoring source: %s", sourceAbs)
+		return TargetIgnore, nil
 	}
 
-	// Target path doesn't exist
-	if !fileutil.PathExists(targetAbs) {
+	ls, _ := fileutil.GetLinkState(targetAbs, sourceAbs)
+
+	switch ls {
+	case fileutil.AlreadyLinked:
+		sugar.Debugf("Target link is correct: %s", linkString(targetAbs, sourceAbs))
+		return TargetAlreadyLinked, nil
+
+	case fileutil.Missing:
 		sugar.Debugf("No target exists: %s", targetAbs)
-		return Missing, nil
-	}
+		return TargetMissing, nil
 
-	// Target is a symlink
-	if fileutil.IsSymlink(targetAbs) {
-		linked, _ := fileutil.IsSymlinkPointingTo(targetAbs, sourceAbs)
-		if linked {
-			sugar.Debugf("Target link is correct: %s", linkString(targetAbs, sourceAbs))
-			return AlreadyLinked, nil
-		}
+	case fileutil.Mislinked:
 
+		// Read the target
 		linkTarget, _ := os.Readlink(targetAbs)
 		inSource, _ := fileutil.IsChildPath(linkTarget, sourceDir)
 		if inSource {
 			sugar.Debugf("Target link is internally mislinked: %s", linkString(targetAbs, linkTarget))
-			return MislinkedInternal, nil
+			return TargetMislinkedInternal, nil
 		}
 		sugar.Debugf("Target link is externally mislinked: %s", linkString(targetAbs, linkTarget))
-		return MislinkedExternal, nil
-	}
+		return TargetMislinkedExternal, nil
 
-	// Not a symlink—check file or dir content
-	// FIXME: does this work with dirs?
-	same, _ := fileutil.CompareFileHashes(sourceAbs, targetAbs)
-	if same {
-		sugar.Debugf("Target exists and has identical content: %s", targetAbs)
-		return ExistsIdentical, nil
+	case fileutil.ExistsIdentical:
+		sugar.Debugf("File exists at target with identical content: %s", targetAbs)
+		return TargetExistsIdentical, nil
+
+	case fileutil.ExistsModified:
+		sugar.Debugf("File exists at target with different content: %s", targetAbs)
+		return TargetExistsModified, nil
+
+	default:
+		return TargetIgnore, nil // Fallback for unknown or unsupported LinkState
 	}
-	sugar.Debugf("Target exists and has different content: %s", targetAbs)
-	return ExistsModified, nil
 }
 
-// Common logic for walking the source directory
-// walkSourceDir walks the sourceDir and calls handler for each non-ignored file or directory.
+type handler func(sourceAbs, targetAbs string, targetState TargetState) (bool, error)
+
+// Common logic for walking the source directory (for --recursive command calls)
+// walkSourceRec walks the sourceDir and calls handler for each non-ignored file or directory.
 //
 // Parameters:
 // - sourceDirAbs: the root directory to start walking from. Absolute path.
@@ -156,13 +164,14 @@ func determineTargetState(sourceDir, targetDir, sourceRel string, ignoreList []s
 // - handler: callback function called with each file's absolute path, os.FileInfo, and relative path.
 //
 // The walk skips the root directory itself and any ignored files or folders.
-func walkSourceDir(sourceDir string, targetDir string, ignoreList []string, handler func(sourceRel, targetAbs string, targetState TargetState) error) error {
+func walkSourceRec(sourceDir string, targetDir string, ignoreList []string, handlerFunc handler) error {
 
 	// Ensure sourceDir is valid
 	if !filepath.IsAbs(sourceDir) {
 		return fmt.Errorf("walkSourceDir: expected absolute path, got source directory: %s", sourceDir)
 	}
 
+	// Since we guarantee sourDir to be an absolute path, all elements while walking will also be absolute
 	return filepath.Walk(sourceDir, func(sourceAbs string, info os.FileInfo, err error) error {
 		if err != nil {
 			fmt.Printf("Error walking directory %s: %v\n", sourceAbs, err)
@@ -184,20 +193,19 @@ func walkSourceDir(sourceDir string, targetDir string, ignoreList []string, hand
 		}
 
 		// Determine the state of the target
-		sourceRel, _ := filepath.Rel(sourceDir, sourceAbs)
+		sourceRel, _ := filepath.Rel(sourceDir, sourceAbs) // Source path relative to source dir
+		targetAbs := filepath.Join(targetDir, sourceRel)   // Absolute path of target link
 		targetState, err := determineTargetState(sourceDir, targetDir, sourceRel, ignoreList)
 		if err != nil {
 			return err
 		}
 
-		// Handle
-		targetAbs := filepath.Join(targetDir, sourceRel)
-		if err := handler(sourceRel, targetAbs, targetState); err != nil {
+		// Handle this element. The handler decides that if this a dir, if we are to skip it
+		skip, err := handlerFunc(sourceAbs, targetAbs, targetState)
+		if err != nil {
 			return err
 		}
-
-		// Skip walking into subdirectories (whole directories are linked)
-		if info.IsDir() {
+		if (skip || targetState == TargetIgnore) && info.IsDir() {
 			return filepath.SkipDir
 		}
 
@@ -224,33 +232,33 @@ func createSymlinks(sourceDir, targetDir string, force, createDirs, confirm bool
 		}
 	}
 
-	handler := func(sourceRel, targetAbs string, targetState TargetState) error {
+	handler := func(sourceRel, targetAbs string, targetState TargetState) (bool, error) {
 
-		if targetState == Ignore {
-			return nil
+		if targetState == TargetIgnore {
+			return false, nil
 		}
 
 		sourceAbs := filepath.Join(sourceDir, sourceRel)
 
 		// TODO: factor this out to be more reusable
 		switch targetState {
-		case Ignore, AlreadyLinked:
-		case Missing:
+		case TargetIgnore, TargetAlreadyLinked:
+		case TargetMissing:
 			link(sourceAbs, targetAbs, createDirs)
-			return nil
-		case MislinkedInternal:
+			return false, nil
+		case TargetMislinkedInternal:
 			sugar.Debugf("Target file is broken. Creating correct symlink...")
 			if err := os.RemoveAll(targetAbs); err != nil {
-				return fmt.Errorf("failed to remove existing file %s: %w", targetAbs, err)
+				return true, fmt.Errorf("failed to remove existing file %s: %w", targetAbs, err)
 			}
 			link(sourceAbs, targetAbs, createDirs)
-			return nil
+			return false, nil
 
-		case MislinkedExternal:
+		case TargetMislinkedExternal:
 			if force {
 				sugar.Infof("Overwriting existing file at: ", targetAbs)
 				if err := os.RemoveAll(targetAbs); err != nil {
-					return fmt.Errorf("failed to remove existing file %s: %w", targetAbs, err)
+					return true, fmt.Errorf("failed to remove existing file %s: %w", targetAbs, err)
 				}
 			} else {
 				if stringutil.AskForConfirmation("Preview diff of existing file at " + targetAbs + "?") {
@@ -258,27 +266,27 @@ func createSymlinks(sourceDir, targetDir string, force, createDirs, confirm bool
 				}
 				if stringutil.AskForConfirmation("Delete existing file at " + targetAbs + "?") {
 					if err := os.RemoveAll(targetAbs); err != nil {
-						return fmt.Errorf("failed to remove existing file %s: %w", targetAbs, err)
+						return true, fmt.Errorf("failed to remove existing file %s: %w", targetAbs, err)
 					}
 				} else {
 					fmt.Printf("Skipped: %s\n", targetAbs)
-					return nil
+					return false, nil
 				}
 			}
 
-		case ExistsIdentical:
+		case TargetExistsIdentical:
 			sugar.Debugf("Target file has the same content. Creating correct symlink...")
 			if err := os.RemoveAll(targetAbs); err != nil {
-				return fmt.Errorf("failed to remove existing file %s: %w", targetAbs, err)
+				return false, fmt.Errorf("failed to remove existing file %s: %w", targetAbs, err)
 			}
 			link(sourceAbs, targetAbs, createDirs)
-			return nil
+			return false, nil
 
-		case ExistsModified:
+		case TargetExistsModified:
 			if force {
 				sugar.Infof("Overwriting existing file at: ", targetAbs)
 				if err := os.RemoveAll(targetAbs); err != nil {
-					return fmt.Errorf("failed to remove existing file %s: %w", targetAbs, err)
+					return false, fmt.Errorf("failed to remove existing file %s: %w", targetAbs, err)
 				}
 			} else {
 				if stringutil.AskForConfirmation("Preview diff of existing file at " + targetAbs + "?") {
@@ -286,11 +294,11 @@ func createSymlinks(sourceDir, targetDir string, force, createDirs, confirm bool
 				}
 				if stringutil.AskForConfirmation("Delete existing file at " + targetAbs + "?") {
 					if err := os.RemoveAll(targetAbs); err != nil {
-						return fmt.Errorf("failed to remove existing file %s: %w", targetAbs, err)
+						return false, fmt.Errorf("failed to remove existing file %s: %w", targetAbs, err)
 					}
 				} else {
 					fmt.Printf("Skipped: %s\n", targetAbs)
-					return nil
+					return false, nil
 				}
 			}
 
@@ -298,10 +306,10 @@ func createSymlinks(sourceDir, targetDir string, force, createDirs, confirm bool
 			// Handle unexpected state
 		}
 
-		return nil
+		return false, nil
 	}
 
-	return walkSourceDir(sourceDir, targetDir, ignoreList, handler)
+	return walkSourceRec(sourceDir, targetDir, ignoreList, handler)
 }
 
 // Walk the target directory and remove symlinks
@@ -323,20 +331,20 @@ func removeSymlinks(sourceDir, targetDir string, ignoreList []string, confirm bo
 		}
 	}
 
-	handler := func(sourceRel, targetAbs string, targetState TargetState) error {
+	handler := func(sourceRel, targetAbs string, targetState TargetState) (bool, error) {
 
 		// TODO: factor this out to be more reusable
 		sourceAbs := filepath.Join(sourceDir, sourceRel)
 
 		switch targetState {
-		case Ignore, Missing, ExistsIdentical, ExistsModified:
-		case AlreadyLinked, MislinkedInternal:
+		case TargetIgnore, TargetMissing, TargetExistsIdentical, TargetExistsModified:
+		case TargetAlreadyLinked, TargetMislinkedInternal:
 			unlink(sourceAbs, targetAbs)
-		case MislinkedExternal:
+		case TargetMislinkedExternal:
 
 			// Ask for confirmation if needed
 			if confirm && !stringutil.AskForConfirmation(fmt.Sprintf("Remove symlink %s?", linkString(targetAbs, sourceAbs))) {
-				return nil
+				return false, nil
 			}
 
 			unlink(sourceAbs, targetAbs)
@@ -345,10 +353,10 @@ func removeSymlinks(sourceDir, targetDir string, ignoreList []string, confirm bo
 			// Handle unexpected state
 		}
 
-		return nil
+		return false, nil
 	}
 
-	return walkSourceDir(sourceDir, targetDir, ignoreList, handler)
+	return walkSourceRec(sourceDir, targetDir, ignoreList, handler)
 }
 
 type Stats struct {
@@ -373,30 +381,30 @@ func gatherStats(sourceDir, targetDir string, ignoreList []string) (Stats, error
 		return stats, fmt.Errorf("gatherStats: expected absolute path, got target directory: %s", targetDir)
 	}
 
-	err := walkSourceDir(sourceDir, targetDir, ignoreList, func(sourceRel, targetAbs string, targetState TargetState) error {
+	err := walkSourceRec(sourceDir, targetDir, ignoreList, func(sourceRel, targetAbs string, targetState TargetState) (bool, error) {
 
 		switch targetState {
-		case Ignore:
+		case TargetIgnore:
 			stats.Ignored++
-		case Missing:
+		case TargetMissing:
 			stats.NoTarget++
 			stats.Unlinked++
-		case AlreadyLinked:
+		case TargetAlreadyLinked:
 			stats.LinkedDirs++
 			stats.LinkedFiles++
-		case MislinkedInternal:
+		case TargetMislinkedInternal:
 			stats.IncorrectSymlink++
-		case MislinkedExternal:
+		case TargetMislinkedExternal:
 			stats.IncorrectSymlink++
-		case ExistsIdentical:
+		case TargetExistsIdentical:
 			stats.SameContents++
-		case ExistsModified:
+		case TargetExistsModified:
 			stats.DifferentContents++
 		default:
 			// Handle unexpected state
 		}
 
-		return nil
+		return false, nil
 
 	})
 
@@ -411,12 +419,17 @@ type Args struct {
 }
 
 func printStats(sourceDir string, targetDir string, ignore []string) {
+	stats, err := gatherStats(sourceDir, targetDir, ignore)
+	if err != nil {
+		sugar.Fatalf("Error gathering stats: %v", err)
+	}
+
 	root := &tree.TreeNode{Text: "Stats"}
 
-	linked := &tree.TreeNode{Text: "Linked files", Icon: "✔", Color: color.New(color.FgGreen).SprintFunc()}
-	ignored := &tree.TreeNode{Text: "Ignored files", Icon: "―", Color: color.New(color.FgBlue).SprintFunc()}
+	linked := &tree.TreeNode{Text: fmt.Sprintf("Linked files (%d)", stats.LinkedFiles), Icon: "✔", Color: color.New(color.FgGreen).SprintFunc()}
+	ignored := &tree.TreeNode{Text: fmt.Sprintf("Ignored files (%d)", stats.Ignored), Icon: "―", Color: color.New(color.FgBlue).SprintFunc()}
 
-	unlinked := &tree.TreeNode{Text: "Unlinked files", Icon: "✖", Color: color.New(color.FgRed).SprintFunc()}
+	unlinked := &tree.TreeNode{Text: fmt.Sprintf("Unlinked files (%d)", stats.Unlinked), Icon: "✖", Color: color.New(color.FgRed).SprintFunc()}
 	unlinked.Children = []*tree.TreeNode{
 		{Text: "Target does not exist", Icon: "•", Color: color.New(color.FgRed).SprintFunc()},
 		{Text: "Broken symlink", Icon: "•", Color: color.New(color.FgRed).SprintFunc()},
@@ -428,7 +441,7 @@ func printStats(sourceDir string, targetDir string, ignore []string) {
 	tree.PrintTreeNode(root, "", true)
 }
 
-const ignoreFile = ".lnignore"
+const ignoreFile = ".lnkitignore"
 
 func main() {
 

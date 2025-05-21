@@ -317,3 +317,49 @@ func PathsEqual(a, b string) (bool, error) {
 	}
 	return ra == rb, nil
 }
+
+// LinkState represents the state of a target with respect to the intended symlink
+type LinkState int
+
+const (
+	AlreadyLinked   LinkState = iota // Correct symlink exists
+	Missing                          // No file or link exists at target
+	Mislinked                        // Symlink exists but points to wrong place
+	ExistsIdentical                  // Regular file or dir exists, content matches source
+	ExistsModified                   // Regular file or dir exists, content differs from source
+)
+
+// Determine the state of a symlink linking target to source (target ~> source)
+func GetLinkState(targetAbs, sourceAbs string) (LinkState, error) {
+
+	if !filepath.IsAbs(sourceAbs) {
+		return Missing, fmt.Errorf("sourceAbs: expected absolute path, got: %s", sourceAbs)
+	}
+	if !filepath.IsAbs(targetAbs) {
+		return Missing, fmt.Errorf("targetAbs: expected absolute path, got: %s", targetAbs)
+	}
+
+	// Target path doesn't exist
+	if !PathExists(targetAbs) {
+		return Missing, nil
+	}
+
+	// Target is a symlink
+	if IsSymlink(targetAbs) {
+		linked, _ := IsSymlinkPointingTo(targetAbs, sourceAbs)
+		if linked {
+			return AlreadyLinked, nil
+		} else {
+			return Mislinked, nil
+		}
+	}
+
+	// Not a symlink—check file or dir content
+	// FIXME: does this work with dirs?
+	same, _ := CompareFileHashes(sourceAbs, targetAbs)
+	if same {
+		return ExistsIdentical, nil
+	}
+
+	return ExistsModified, nil
+}
