@@ -321,14 +321,6 @@ func createSymlinks(linkRoot, targetRoot string, force, createDirs, confirm, rec
 
 const ignoreFile = ".lnkitignore"
 
-// Flags
-var (
-	recursive  bool
-	fold       bool
-	force      bool
-	createDirs bool
-)
-
 func main() {
 
 	InitLogger("Debug")
@@ -340,58 +332,59 @@ func main() {
 
 	// Global flags can be defined here if needed
 
-	// link command
-	linkCmd := &cobra.Command{
-		Use:   "link link_path target_path",
-		Short: "Create symlinks from link_path to target_path",
-		Args: func(cmd *cobra.Command, args []string) error {
-			logArgs()
-			if len(args) < 2 {
-				return fmt.Errorf("Requires a link_path and target_path")
-			}
-			return nil
-		},
-		RunE: runLink,
-	}
-	linkCmd.Flags().BoolVar(&recursive, "rec", false, "Recursively process nested directories")
-	linkCmd.Flags().BoolVar(&fold, "fold", false, "Link whole directories where applicable")
-	linkCmd.Flags().BoolVar(&force, "force", false, "Force")
-	linkCmd.Flags().BoolVar(&createDirs, "create-dirs", true, "Create dirs")
-
-	rootCmd.AddCommand(linkCmd)
+	rootCmd.AddCommand(NewLinkCmd())
 	if err := rootCmd.Execute(); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func logArgs() {
-	sugar.Debugf("Flags --------------------")
-	sugar.Debugf("Recursive flag: %t ", recursive)
-	sugar.Debugf("Recursive flag: %t ", recursive)
-	sugar.Debugf("Force flag: %t", force)
-	sugar.Debugf("Create dirs flag: %t", createDirs)
-	sugar.Debugf("--------------------------")
-}
+func NewLinkCmd() *cobra.Command {
 
-func runLink(cmd *cobra.Command, args []string) error {
+	var recursive, fold, force, createDirs bool
 
-	linkPath, err := fileutil.ExpandPath(args[0])
-	if err != nil {
-		return fmt.Errorf("failed to expand link path: %w", err)
+	runLink := func(cmd *cobra.Command, args []string) error {
+
+		linkPath, err := fileutil.ExpandPath(args[0])
+		if err != nil {
+			return fmt.Errorf("failed to expand link path: %w", err)
+		}
+
+		targetPath, err := fileutil.ExpandPath(args[1])
+		if err != nil {
+			return fmt.Errorf("failed to expand target path: %w", err)
+		}
+
+		sugar.Debugf("linkPath: %s", linkPath)
+		sugar.Debugf("TargetPath: %s", targetPath)
+
+		createSymlinks(linkPath, targetPath, force, createDirs, false, recursive, fold, []string{".git"})
+
+		// TODO: Call your existing linking functions
+		return nil
 	}
 
-	targetPath, err := fileutil.ExpandPath(args[1])
-	if err != nil {
-		return fmt.Errorf("failed to expand target path: %w", err)
+	// link command
+	cmd := &cobra.Command{
+		Use:   "link link_path target_path",
+		Short: "Create symlinks from link_path to target_path",
+		Args: func(cmd *cobra.Command, args []string) error {
+			if len(args) != 2 {
+				return fmt.Errorf("expected exactly 2 arguments: link_path and target_path")
+			}
+			return nil
+		},
+		RunE: runLink,
+		Example: `
+			lnk link --rec ~/dotfiles ~/.config
+			lnk link ~/dotfiles/nvim ~/.config/nvim
+		`,
 	}
+	cmd.Flags().BoolVar(&recursive, "rec", false, "Recursively process nested directories")
+	cmd.Flags().BoolVar(&fold, "fold", false, "Link whole directories where applicable")
+	cmd.Flags().BoolVar(&force, "force", false, "Force")
+	cmd.Flags().BoolVar(&createDirs, "create-dirs", true, "Create dirs")
 
-	sugar.Debugf("linkPath: %s", linkPath)
-	sugar.Debugf("TargetPath: %s", targetPath)
-
-	createSymlinks(linkPath, targetPath, force, createDirs, false, recursive, fold, []string{".git"})
-
-	// TODO: Call your existing linking functions
-	return nil
+	return cmd
 }
 
 func runUnlink(cmd *cobra.Command, args []string) error {
