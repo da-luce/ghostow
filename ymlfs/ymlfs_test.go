@@ -99,3 +99,21 @@ link_to_dirB:
 	requireSymlink(t, filepath.Join(tmpDir, "link_to_file1"), "file1.txt")
 	requireSymlink(t, filepath.Join(tmpDir, "link_to_dirB"), ".dotfiles/dirB")
 }
+
+func TestFromYmlAndToYml_SymlinkToSymlink(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	yamlData := []byte(`
+file1.txt: null
+first_link:
+  symlink: file1.txt
+second_link:
+  symlink: first_link
+`)
+
+	applyAndCheckRoundTrip(t, yamlData, tmpDir)
+
+	require.FileExists(t, filepath.Join(tmpDir, "file1.txt"))
+	requireSymlink(t, filepath.Join(tmpDir, "first_link"), "file1.txt")
+	requireSymlink(t, filepath.Join(tmpDir, "second_link"), "first_link")
+}

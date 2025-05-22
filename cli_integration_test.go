@@ -103,6 +103,62 @@ link:
 	testLinkCommand(t, initial, expected, "link", "link", "./targetfile")
 }
 
+func TestLink_LinkFileNested(t *testing.T) {
+	initial := []byte(`
+file1: null
+dir:
+  targetfile: null
+`)
+
+	expected := []byte(`
+file1: null
+dir:
+  targetfile: null
+linkpath:
+  symlink: dir/targetfile
+`)
+
+	testLinkCommand(t, initial, expected, "link", "linkpath", "./dir/targetfile")
+}
+
+func TestLink_LinkFileNested2(t *testing.T) {
+	initial := []byte(`
+file1: null
+dir:
+  targetfile: null
+`)
+
+	expected := []byte(`
+file1: null
+dir:
+  targetfile: null
+  linkpath:
+    symlink: targetfile
+`)
+
+	testLinkCommand(t, initial, expected, "link", "./dir/linkpath", "./dir/targetfile")
+}
+
+func TestLink_LinkFileNested3(t *testing.T) {
+	initial := []byte(`
+file1: null
+dir1:
+  targetfile: null
+dir2: {}
+`)
+
+	expected := []byte(`
+file1: null
+dir1:
+  targetfile: null
+dir2:
+  linkpath:
+    symlink: ../dir1/targetfile
+`)
+
+	testLinkCommand(t, initial, expected, "link", "./dir2/linkpath", "./dir1/targetfile")
+}
+
 func TestLink_LinkSymlink(t *testing.T) {
 	initial := []byte(`
 targetfile: null
@@ -198,4 +254,38 @@ config:
 `)
 
 	testLinkCommand(t, initial, expected, "link", "config", ".dotfiles", "--rec", "--fold")
+}
+
+func TestLink_Dotfiles(t *testing.T) {
+	initial := []byte(`
+home:
+  file1.txt: null
+  .dotfiles:
+    file2.txt: null
+    .config:
+      file3.txt: null
+      my_app:
+        file4.txt: null
+`)
+
+	expected := []byte(`
+home:
+  file1.txt: null
+  file2.txt:
+    symlink: .dotfiles/file2.txt
+  .config:
+    file3.txt:
+      symlink: ../.dotfiles/.config/file3.txt
+    my_app:
+      file4.txt:
+        symlink: ../../.dotfiles/.config/my_app/file4.txt
+  .dotfiles:
+    file2.txt: null
+    .config:
+      file3.txt: null
+      my_app:
+        file4.txt: null
+`)
+
+	testLinkCommand(t, initial, expected, "link", "./home", "./home/.dotfiles", "--rec")
 }
