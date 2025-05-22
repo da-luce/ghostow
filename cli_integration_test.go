@@ -72,18 +72,19 @@ func testLinkCommand(t *testing.T, initialYAML, expectedYAML []byte, cmdName, li
 	require.NoError(t, err, "command output: %s", out.String())
 
 	// Assert final directory matches expected YAML
-	ymlfs.AssertDirMatchesYAML(t, tmpDir, string(expectedYAML))
+	matched, err := ymlfs.AssertStructure(tmpDir, string(expectedYAML))
+	require.NoError(t, err, "error comparing directory structure")
+	require.True(t, matched, "B directory structure does not match expected YAML")
 }
 
 func TestLink_LinkFile(t *testing.T) {
 	initial := []byte(`
-targetfile: null
+targetfile: {type: file, content: "eee"}
 `)
 
 	expected := []byte(`
-targetfile: null
-link:
-  symlink: targetfile
+targetfile: {type: file, content: "eee"}
+link: {type: symlink, target: targetfile}
 `)
 
 	testLinkCommand(t, initial, expected, "link", "link", "targetfile")
@@ -91,13 +92,12 @@ link:
 
 func TestLink_LinkFileRelativePath(t *testing.T) {
 	initial := []byte(`
-targetfile: null
+targetfile: {type: file, content: "eee"}
 `)
 
 	expected := []byte(`
-targetfile: null
-link:
-  symlink: targetfile
+targetfile: {type: file, content: "eee"}
+link: {type: symlink, target: targetfile}
 `)
 
 	testLinkCommand(t, initial, expected, "link", "link", "./targetfile")
@@ -105,17 +105,16 @@ link:
 
 func TestLink_LinkFileNested(t *testing.T) {
 	initial := []byte(`
-file1: null
+file1:  {type: file, content: "eee"}
 dir:
-  targetfile: null
+  targetfile:  {type: file, content: "eee"}
 `)
 
 	expected := []byte(`
-file1: null
+file1:  {type: file, content: "eee"}
 dir:
-  targetfile: null
-linkpath:
-  symlink: dir/targetfile
+  targetfile:  {type: file, content: "eee"}
+linkpath: {type: symlink, target: dir/targetfile}
 `)
 
 	testLinkCommand(t, initial, expected, "link", "linkpath", "./dir/targetfile")
@@ -123,17 +122,16 @@ linkpath:
 
 func TestLink_LinkFileNested2(t *testing.T) {
 	initial := []byte(`
-file1: null
+file1:  {type: file, content: "eee"}
 dir:
-  targetfile: null
+  targetfile:  {type: file, content: "eee"}
 `)
 
 	expected := []byte(`
-file1: null
+file1:  {type: file, content: "eee"}
 dir:
-  targetfile: null
-  linkpath:
-    symlink: targetfile
+  targetfile:  {type: file, content: "eee"}
+  linkpath: {type: symlink, target: targetfile}
 `)
 
 	testLinkCommand(t, initial, expected, "link", "./dir/linkpath", "./dir/targetfile")
@@ -141,23 +139,24 @@ dir:
 
 func TestLink_LinkFileNested3(t *testing.T) {
 	initial := []byte(`
-file1: null
+file1: {type: file, content: "eee"}
 dir1:
-  targetfile: null
-dir2: {}
+  targetfile:  {type: file, content: "eee"}
+dir2:
 `)
 
 	expected := []byte(`
-file1: null
+file1: {type: file, content: "eee"}
 dir1:
-  targetfile: null
+  targetfile: {type: file, content: "eee"}
 dir2:
-  linkpath:
-    symlink: ../dir1/targetfile
+  linkpath: {type: symlink, target: ../dir1/targetfile}
 `)
 
 	testLinkCommand(t, initial, expected, "link", "./dir2/linkpath", "./dir1/targetfile")
 }
+
+// stop here
 
 func TestLink_LinkSymlink(t *testing.T) {
 	initial := []byte(`

@@ -4,14 +4,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"testing"
+	"reflect"
 
-	"github.com/stretchr/testify/require"
+	"github.com/google/go-cmp/cmp"
 	"gopkg.in/yaml.v3"
 )
 
-// FromYml parses YAML data describing a directory structure with symlinks and
-// creates the corresponding structure on disk rooted at rootDir.
+// FromYml parses YAML data describing a directory structure with files, directories, and symlinks,
+// and creates the corresponding structure on disk rooted at rootDir.
 func FromYml(rootDir string, yamlData []byte) error {
 	var root map[string]interface{}
 	if err := yaml.Unmarshal(yamlData, &root); err != nil {
@@ -22,36 +22,56 @@ func FromYml(rootDir string, yamlData []byte) error {
 
 func createStructure(base string, node map[string]interface{}) error {
 	for name, val := range node {
-		switch v := val.(type) {
-		case nil:
-			// Create empty file
-			fpath := filepath.Join(base, name)
-			f, err := os.Create(fpath)
-			if err != nil {
-				return err
-			}
-			f.Close()
-
+		switch typed := val.(type) {
 		case map[string]interface{}:
-			if target, ok := v["symlink"]; ok {
-				targetStr, ok := target.(string)
+			typ, _ := typed["type"].(string)
+
+			switch typ {
+			case "file":
+				path := filepath.Join(base, name)
+				content, ok := typed["content"].(string)
 				if !ok {
-					return fmt.Errorf("symlink target for %s is not a string", name)
+					return fmt.Errorf("file %s missing 'content'", name)
 				}
-				linkPath := filepath.Join(base, name)
-				err := os.Symlink(targetStr, linkPath)
+				f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 				if err != nil {
 					return err
 				}
-			} else {
-				// Directory
+				if _, err := f.WriteString(content); err != nil {
+					f.Close()
+					return err
+				}
+				f.Close()
+
+			case "symlink":
+				target, ok := typed["target"].(string)
+				if !ok {
+					return fmt.Errorf("symlink %s missing 'target'", name)
+				}
+				linkPath := filepath.Join(base, name)
+				if err := os.Symlink(target, linkPath); err != nil {
+					return err
+				}
+
+			case "":
+				// No "type" key → treat as directory
 				dirPath := filepath.Join(base, name)
 				if err := os.MkdirAll(dirPath, 0755); err != nil {
 					return err
 				}
-				if err := createStructure(dirPath, v); err != nil {
+				if err := createStructure(dirPath, typed); err != nil {
 					return err
 				}
+
+			default:
+				return fmt.Errorf("unsupported type %q for %s", typ, name)
+			}
+
+		case nil:
+			// nil means empty directory
+			dirPath := filepath.Join(base, name)
+			if err := os.MkdirAll(dirPath, 0755); err != nil {
+				return err
 			}
 
 		default:
@@ -61,11 +81,8 @@ func createStructure(base string, node map[string]interface{}) error {
 	return nil
 }
 
-// ToYml walks a directory tree rooted at rootDir and returns a YAML
-// representation of the structure in the format:
-// - files: null
-// - directories: nested maps
-// - symlinks: map with "symlink" key and target string
+// ToYml reads the directory structure and files at rootDir and returns
+// a YAML representation of the structure including symlinks and directories.
 func ToYml(rootDir string) ([]byte, error) {
 	info, err := os.Stat(rootDir)
 	if err != nil {
@@ -82,7 +99,6 @@ func ToYml(rootDir string) ([]byte, error) {
 
 	return yaml.Marshal(tree)
 }
-
 func buildYmlTree(base string) (map[string]interface{}, error) {
 	entries, err := os.ReadDir(base)
 	if err != nil {
@@ -105,50 +121,78 @@ func buildYmlTree(base string) (map[string]interface{}, error) {
 				return nil, err
 			}
 
-			// Convert absolute target to relative to root, if possible
+			// Convert absolute target to relative to base, if possible
 			if filepath.IsAbs(target) {
-				rel, err := filepath.Rel(base, target)
-				if err == nil {
+				if rel, err := filepath.Rel(base, target); err == nil {
 					target = rel
 				}
-				// else keep target as is if Rel fails
 			}
 
-			result[name] = map[string]interface{}{"symlink": target}
+			result[name] = map[string]interface{}{
+				"type":   "symlink",
+				"target": target,
+			}
+
 		} else if info.IsDir() {
+			// Directory: recurse, no "type: dir" key
 			subtree, err := buildYmlTree(path)
 			if err != nil {
 				return nil, err
 			}
-			result[name] = subtree
+
+			if len(subtree) == 0 {
+				// empty dir represented as nil
+				result[name] = nil
+			} else {
+				result[name] = subtree
+			}
+
 		} else {
-			// regular file
-			result[name] = nil
+			// File: must have content and type:file
+			content, err := os.ReadFile(path)
+			if err != nil {
+				return nil, err
+			}
+
+			result[name] = map[string]interface{}{
+				"type":    "file",
+				"content": string(content),
+			}
 		}
 	}
 
 	return result, nil
 }
 
-// toMap unmarshals YAML bytes into a map[string]interface{}.
+// ToMap unmarshals YAML bytes into a map[string]interface{}.
 func ToMap(data []byte) (map[string]interface{}, error) {
 	var m map[string]interface{}
 	err := yaml.Unmarshal(data, &m)
 	return m, err
 }
 
-// AssertDirMatchesYAML compares the structure of dirPath against the expected YAML description.
-func AssertDirMatchesYAML(t *testing.T, dirPath string, expectedYAML string) {
-	t.Helper()
+// AssertStructure compares the actual filesystem at dirPath against the expected YAML structure.
+// Returns (true, nil) if they match, (false, nil) if they don't match, or (false, err) if an error occurs.
+func AssertStructure(dirPath string, expectedYaml string) (bool, error) {
+	actualYaml, err := ToYml(dirPath)
+	if err != nil {
+		return false, fmt.Errorf("failed to generate YAML from directory: %w", err)
+	}
 
-	actualYAML, err := ToYml(dirPath)
-	require.NoError(t, err, "failed to generate YAML from directory")
+	actualMap, err := ToMap(actualYaml)
+	if err != nil {
+		return false, fmt.Errorf("failed to unmarshal actual YAML: %w", err)
+	}
 
-	actualMap, err := ToMap(actualYAML)
-	require.NoError(t, err, "failed to unmarshal actual YAML")
+	expectedMap, err := ToMap([]byte(expectedYaml))
+	if err != nil {
+		return false, fmt.Errorf("failed to unmarshal expected YAML: %w", err)
+	}
 
-	expectedMap, err := ToMap([]byte(expectedYAML))
-	require.NoError(t, err, "failed to unmarshal expected YAML")
+	if !reflect.DeepEqual(expectedMap, actualMap) {
+		diff := cmp.Diff(expectedMap, actualMap)
+		return false, fmt.Errorf("structure mismatch:\n%s", diff)
+	}
 
-	require.Equal(t, expectedMap, actualMap, "directory structure does not match expected YAML")
+	return true, nil
 }

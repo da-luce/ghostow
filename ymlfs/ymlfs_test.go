@@ -16,8 +16,16 @@ func applyAndCheckRoundTrip(t *testing.T, yamlData []byte, tmpDir string) {
 	err := FromYml(tmpDir, yamlData)
 	require.NoError(t, err)
 
+	matched, err := AssertStructure(tmpDir, string(yamlData))
+	require.NoError(t, err, "error comparing directory structure")
+	require.True(t, matched, "A directory structure does not match expected YAML")
+
 	outYaml, err := ToYml(tmpDir)
 	require.NoError(t, err)
+
+	matched, err = AssertStructure(tmpDir, string(outYaml))
+	require.NoError(t, err, "error comparing directory structure")
+	require.True(t, matched, "B directory structure does not match expected YAML")
 
 	got, err := ToMap(outYaml)
 	require.NoError(t, err)
@@ -43,14 +51,17 @@ func requireSymlink(t *testing.T, linkPath, expectedTarget string) {
 
 func TestFromYmlAndToYml_SingleFile(t *testing.T) {
 	tmpDir := t.TempDir()
-	yamlData := []byte(`file.txt: null`)
+	yamlData := []byte(`file.txt: {type: file, content: "hello world"}`)
 	applyAndCheckRoundTrip(t, yamlData, tmpDir)
 	require.FileExists(t, filepath.Join(tmpDir, "file.txt"))
 }
 
 func TestFromYmlAndToYml_SingleDir(t *testing.T) {
 	tmpDir := t.TempDir()
-	yamlData := []byte(`mydir: {}`)
+	yamlData := []byte(`
+mydir:
+  myfile: {type: file, content: "gurt: yo"}
+`)
 	applyAndCheckRoundTrip(t, yamlData, tmpDir)
 	info, err := os.Stat(filepath.Join(tmpDir, "mydir"))
 	require.NoError(t, err)
@@ -65,9 +76,8 @@ func TestFromYmlAndToYml_SingleSymlink(t *testing.T) {
 	require.NoError(t, err)
 
 	yamlData := []byte(`
-real.txt: null
-link.txt:
-  symlink: real.txt
+real.txt: {type: file, content: "hello"}
+link.txt: {type: symlink, target: real.txt}
 `)
 	applyAndCheckRoundTrip(t, yamlData, tmpDir)
 	require.FileExists(t, filepath.Join(tmpDir, "real.txt"))
@@ -78,16 +88,14 @@ func TestFromYmlAndToYml(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	yamlData := []byte(`
-file1.txt: null
-config: {}
+file1.txt: {type: file, content: "hey"}
+config:
 .dotfiles:
-  file2.txt: null
+  file2.txt: {type: file, content: "file 2"}
   dirB:
-    file3.txt: null
-link_to_file1:
-  symlink: file1.txt
-link_to_dirB:
-  symlink: .dotfiles/dirB
+    file3.txt: {type: file, content: "file 3"}
+link_to_file1: {type: symlink, target: file1.txt }
+link_to_dirB: {type: symlink, target: .dotfiles/dirB }
 `)
 	applyAndCheckRoundTrip(t, yamlData, tmpDir)
 
@@ -104,11 +112,9 @@ func TestFromYmlAndToYml_SymlinkToSymlink(t *testing.T) {
 	tmpDir := t.TempDir()
 
 	yamlData := []byte(`
-file1.txt: null
-first_link:
-  symlink: file1.txt
-second_link:
-  symlink: first_link
+file1.txt: {type: file, content: "some text"}
+first_link: {type: symlink, target: file1.txt}
+second_link: {type: symlink, target: first_link}
 `)
 
 	applyAndCheckRoundTrip(t, yamlData, tmpDir)
