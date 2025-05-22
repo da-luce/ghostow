@@ -244,21 +244,28 @@ func ReadFileLines(filePath string, ignoreBlank bool) ([]string, error) {
 	return lines, nil
 }
 
-// Create a symlink at the target location
-func CreateSymlink(source, dest string, createDirs bool) error {
-	// Ensure the target directory exists
-	dir := filepath.Dir(dest)
+// Create a symlink
+// CreateSymlink creates a symlink at linkPath pointing to targetPath.
+// If createDirs is true, it ensures the parent directory of linkPath exists.
+// It returns an error if the symlink already exists or the path is taken.
+func CreateSymlink(linkPath, targetPath string, createDirs bool) error {
 	if createDirs {
-		if !IsDir(dir) {
-			if err := os.MkdirAll(dir, 0755); err != nil {
-				return fmt.Errorf("failed to create directory %s: %w", dir, err)
-			}
+		parent := filepath.Dir(linkPath)
+		if err := os.MkdirAll(parent, 0755); err != nil {
+			return fmt.Errorf("failed to create parent directories for %s: %w", linkPath, err)
 		}
 	}
 
+	// Check if the link path already exists
+	if _, err := os.Lstat(linkPath); err == nil {
+		return fmt.Errorf("path already exists at %s", linkPath)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("error checking if path exists: %w", err)
+	}
+
 	// Create the symlink
-	if err := os.Symlink(source, dest); err != nil {
-		return fmt.Errorf("failed to create symlink from %s to %s: %w", source, dest, err)
+	if err := os.Symlink(targetPath, linkPath); err != nil {
+		return fmt.Errorf("failed to create symlink: %w", err)
 	}
 
 	return nil

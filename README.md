@@ -9,8 +9,8 @@
 
 | **Command**                                                                                                         | **Description**                                                                                                                                                                               | **Implemented?** |
 | ------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------- |
-| `lnk link [-vnfr] source [target]`                                                                                  | Creates symlink at target pointing back to the source                                                                                                                                         | ✅*              |
-| `lnk unlink [-vnfr] [target=.]`                                                                                     | Removes target symlink                                                                                                                                                                        | ✅               |
+| `lnk link [-vnfr] source [target]`                                                                                  | Creates symlink at target pointing back to the source                                                                                                                                         | ⚠️*            |
+| `lnk unlink [-vnfr] [target=.]`                                                                                     | Removes target symlink                                                                                                                                                                        | ❌               |
 | `lnk relativize [-vnfr] [target=.]`                                                                                 | Convert absolute symlink to relative                                                                                                                                                          | ❌               |
 | `lnk list [-vnr] [target=.]`                                                                                        | Lists all symlinks inside the target directory                                                                                                                                                | ❌               |
 | `lnk clean [-vnfr] [target=.]`                                                                                      | Remove broken symlinks inside target                                                                                                                                                          | ❌               |
@@ -18,14 +18,14 @@
 | `lnk track [-vnfr] symlink [--pattern=pattern \| --sort=version\|time\|name \| --script=path] [--item=first\|last]` | Creates or updates a tracking symlink based on matching targets filtered by pattern, sorted by criteria, or dynamically resolved by a user script. Selects first or last match.               | ❌*              |
 | `lnk autolink [-vnfr] [--pattern=pattern] [--target=dir=~] [--folders ...]`                                         | Automatically scans the specified directory (e.g., a shared volume) for matching folders and creates symlinks in the target directory, maintaining or fixing links for selected folder names. | ❌*              |
 
-| **Option**          | **Description**                                               | **Implemented?** |
-| ------------------- | ------------------------------------------------------------- | ---------------- |
+| **Option**          | **Description**                                                | **Implemented?** |
+| ------------------- | -------------------------------------------------------------- | ---------------- |
 | `-f`, `--force`     | Force all operations, e.g., overwrite existing links or files. | ❌               |
-| `-r`, `--recursive` | Recursively operate on directories and subdirectories.        | ❌               |
-| `-n`, `--dry-run`   | Show what would be done without making any changes.           | ❌               |
-| `-v`, `--verbose`   | Print detailed information about operations performed.        | ❌               |
-| `--max-depth=N`     | Limit recursion depth to N levels.                            | ❌               |
-| `--relative`        | Create symlinks with relative paths instead of absolute.      | ❌               |
+| `-r`, `--recursive` | Recursively operate on directories and subdirectories.         | ⚠️             |
+| `-n`, `--dry-run`   | Show what would be done without making any changes.            | ❌               |
+| `-v`, `--verbose`   | Print detailed information about operations performed.         | ❌               |
+| `--max-depth=N`     | Limit recursion depth to N levels.                             | ❌               |
+| `--relative`        | Create symlinks with relative paths instead of absolute.       | ❌               |
 
 ### `link --recursive`
 
@@ -69,7 +69,9 @@ The folding logic works as follows:
 
 #### Example
 
-Assume you want to link the contents of  `~/.config/nvim` to `~/.dotfiles/.config/nvim`.
+Assume you want to link the contents of  `~/.config/` to `~/.dotfiles/.config/nvim`.
+Here's what `lnk link --recursive ~/.dotfiles/ ~/.config/` results in depending on if `--fold` is provided:
+
 ```mermaid
 ---
 config:
@@ -78,9 +80,9 @@ config:
 ---
 graph TD
 
-    subgraph CONFIG_FOLD [~/.config/ -- Folding]
-        Fa[~/.config/]-->Fb[nvim/]
-        Fa --> Ff[alactritty/]
+    subgraph CONFIG_FOLD [~/.config/ - Folding]
+        Fa[~/.config/]-->Fb[nvim]
+        Fa --> Ff[alactritty]
         Fa --> Fh[starship.toml]
     end
 
@@ -116,9 +118,6 @@ graph TD
         L1[Regular File or Dir]
         L2[Symlink]:::symlink
     end
-
-
-
 ```
 
 ### `track`
@@ -152,9 +151,22 @@ pattern = ""              # Optional: Use glob pattern instead of explicit list
 recursive = false         # Optionally link contents instead of folders
 ```
 
-## Disambiguation 
+## Disambiguation
 
-- GNU Stow links targe dir to source dir. Ln links tagret file to source file
+- GNU Stow links an entire target directory to a source directory.
+- ln links a target file path (the symlink) to a source path (the actual file or directory).
+
+This can be confusing, since when using Stow, the symlinks created inside the
+target directory actually point to (i.e. target) files in the source directory.
+
+To eliminate this ambiguity, I use a single, consistent naming scheme:
+
+- **linkPath**: the symlink path
+- **targetPath**: the path the symlink points to
+
+There is no fixed notion of "source" or "target directory" like in Stow — every
+link is treated explicitly. This avoids confusion and gives you full control
+over what links to what.
 
 ## TODO
 

@@ -10,11 +10,9 @@ import (
 
 	"lnkit/fileutil"
 	"lnkit/stringutil"
-	"lnkit/tree"
 
-	"github.com/BurntSushi/toml"
-	"github.com/alexflint/go-arg"
 	"github.com/fatih/color"
+	"github.com/spf13/cobra"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 )
@@ -87,125 +85,106 @@ func PreviewDiff(source, target string) error {
 	return cmd.Run()
 }
 
-// TargetState represents a higher-level state derived from LinkState,
+// LState represents a higher-level state derived from LinkState,
 // with awareness of source directories, useful for recursive link operations.
-type TargetState int
+type LState int
 
 const (
-	TargetIgnore            TargetState = iota // Target should be ignored (e.g., explicitly excluded)
-	TargetAlreadyLinked                        // Correct symlink already exists; no action needed
-	TargetMissing                              // No file/link exists; symlink should be created
-	TargetMislinkedInternal                    // Symlink points to the wrong place within the managed source set
-	TargetMislinkedExternal                    // Symlink points outside the managed sources; should be corrected
-	TargetExistsIdentical                      // A regular file/dir exists and matches the source; may be replaced with a link
-	TargetExistsModified                       // A regular file/dir exists and differs from the source; replacement may overwrite changes
+	LIgnore            LState = iota // Target should be ignored (e.g., explicitly excluded)
+	LAlreadyLinked                   // Correct symlink already exists; no action needed
+	LMissing                         // No file/link exists; symlink should be created
+	LMislinkedInternal               // Symlink points to the wrong place within the managed source set
+	LMislinkedExternal               // Symlink points outside the managed sources; should be corrected
+	LExistsIdentical                 // A regular file/dir exists and matches the source; may be replaced with a link
+	LExistsModified                  // A regular file/dir exists and differs from the source; replacement may overwrite changes
 )
 
 // MapLinkStateToTargetState maps a basic LinkState to an appropriate TargetState.
 // More advanced versions can incorporate context like source directories.
-func determineTargetState(sourceDir, targetDir, sourceRel string, ignoreList []string) (TargetState, error) {
+func determineTargetState(linkPath, targetPath, targetRoot string, ignoreList []string) (LState, error) {
 
-	// Get absolute paths
-	targetAbs := filepath.Join(targetDir, sourceRel)
-	sourceAbs := filepath.Join(sourceDir, sourceRel)
+	sugar.Debugf("Determining link state for: %s", linkString(linkPath, targetPath))
 
 	// Ignore any directories or files in the ignore list
-	if matched, err := fileutil.MatchesPatterns(filepath.Base(sourceAbs), ignoreList); err != nil {
-		return TargetIgnore, fmt.Errorf("error checking ignore patterns: %v", err)
+	if matched, err := fileutil.MatchesPatterns(filepath.Base(targetPath), ignoreList); err != nil {
+		return LIgnore, fmt.Errorf("error checking ignore patterns: %v", err)
 	} else if matched {
-		sugar.Debugf("Ignoring source: %s", sourceAbs)
-		return TargetIgnore, nil
+		sugar.Debugf("Ignoring target: %s", targetPath)
+		return LIgnore, nil
 	}
 
-	ls, _ := fileutil.GetLinkState(targetAbs, sourceAbs)
+	ls, _ := fileutil.GetLinkState(linkPath, targetPath)
 
 	switch ls {
 	case fileutil.AlreadyLinked:
-		sugar.Debugf("Target link is correct: %s", linkString(targetAbs, sourceAbs))
-		return TargetAlreadyLinked, nil
+		sugar.Debugf("Link is already in place: %s", linkString(linkPath, targetPath))
+		return LAlreadyLinked, nil
 
 	case fileutil.Missing:
-		sugar.Debugf("No target exists: %s", targetAbs)
-		return TargetMissing, nil
+		sugar.Debugf("Nothing exists at: %s", linkPath)
+		return LMissing, nil
 
 	case fileutil.Mislinked:
 
 		// Read the target
-		linkTarget, _ := os.Readlink(targetAbs)
-		inSource, _ := fileutil.IsChildPath(linkTarget, sourceDir)
-		if inSource {
-			sugar.Debugf("Target link is internally mislinked: %s", linkString(targetAbs, linkTarget))
-			return TargetMislinkedInternal, nil
+		linkTarget, _ := os.Readlink(linkPath)
+		inTarget, _ := fileutil.IsChildPath(linkTarget, targetRoot)
+		if inTarget {
+			sugar.Debugf("Link is internally mislinked: %s", linkString(linkPath, linkTarget))
+			return LMislinkedInternal, nil
 		}
-		sugar.Debugf("Target link is externally mislinked: %s", linkString(targetAbs, linkTarget))
-		return TargetMislinkedExternal, nil
+		sugar.Debugf("Link is externally mislinked: %s", linkString(linkPath, linkTarget))
+		return LMislinkedExternal, nil
 
 	case fileutil.ExistsIdentical:
-		sugar.Debugf("File exists at target with identical content: %s", targetAbs)
-		return TargetExistsIdentical, nil
+		sugar.Debugf("File with identical content exists at: %s", linkPath)
+		return LExistsIdentical, nil
 
+	// TODO: fix this handling if the link path exists as a dir v.s. file
 	case fileutil.ExistsModified:
-		sugar.Debugf("File exists at target with different content: %s", targetAbs)
-		return TargetExistsModified, nil
+		sugar.Debugf("File with with different content exists at: %s", linkPath)
+		return LExistsModified, nil
 
 	default:
-		return TargetIgnore, nil // Fallback for unknown or unsupported LinkState
+		return LIgnore, nil // Fallback for unknown or unsupported LinkState
 	}
 }
 
-type handler func(sourceAbs, targetAbs string, targetState TargetState) (bool, error)
+type handler func(sourceAbs, targetAbs string, targetState LState) (bool, error)
 
-// Common logic for walking the source directory (for --recursive command calls)
-// walkSourceRec walks the sourceDir and calls handler for each non-ignored file or directory.
-//
-// Parameters:
-// - sourceDirAbs: the root directory to start walking from. Absolute path.
-// - ignoreList: list of filename patterns to skip (e.g., ".git", "*.tmp").
-// - handler: callback function called with each file's absolute path, os.FileInfo, and relative path.
-//
-// The walk skips the root directory itself and any ignored files or folders.
-func walkSourceRec(sourceDir string, targetDir string, ignoreList []string, handlerFunc handler) error {
+func walkSourceRec(linkRoot, targetRoot string, ignoreList []string, handlerFunc handler) error {
 
 	// Ensure sourceDir is valid
-	if !filepath.IsAbs(sourceDir) {
-		return fmt.Errorf("walkSourceDir: expected absolute path, got source directory: %s", sourceDir)
+	if !filepath.IsAbs(targetRoot) {
+		return fmt.Errorf("walkSourceDir: expected absolute path, got source directory: %s", targetRoot)
 	}
 
-	// Since we guarantee sourDir to be an absolute path, all elements while walking will also be absolute
-	return filepath.Walk(sourceDir, func(sourceAbs string, info os.FileInfo, err error) error {
+	// Since we guarantee targetRoot to be an absolute path, targetPath will also be absolute
+	return filepath.Walk(targetRoot, func(targetPath string, info os.FileInfo, err error) error {
 		if err != nil {
-			fmt.Printf("Error walking directory %s: %v\n", sourceAbs, err)
+			fmt.Printf("Error walking directory %s: %v\n", targetPath, err)
 			return err
 		}
 
-		// Skip the root directory (but walk into it)
-		isRootDir, err := fileutil.PathsEqual(sourceAbs, sourceDir)
-		if err != nil {
-			return fmt.Errorf("failed to compare paths: %w", err)
-		}
-		if isRootDir {
-			return nil
-		}
-
-		// Ignore symlinks in the source directory
-		if fileutil.IsSymlink(sourceAbs) {
+		// Ignore symlinks in the target directory
+		if fileutil.IsSymlink(targetPath) {
 			return nil
 		}
 
 		// Determine the state of the target
-		sourceRel, _ := filepath.Rel(sourceDir, sourceAbs) // Source path relative to source dir
-		targetAbs := filepath.Join(targetDir, sourceRel)   // Absolute path of target link
-		targetState, err := determineTargetState(sourceDir, targetDir, sourceRel, ignoreList)
+		targetRel, _ := filepath.Rel(targetRoot, targetPath) // Source path relative to target dir
+		linkPath := filepath.Join(linkRoot, targetRel)       // Absolute path of link path
+		linkState, err := determineTargetState(linkPath, targetPath, targetRoot, ignoreList)
 		if err != nil {
 			return err
 		}
 
 		// Handle this element. The handler decides that if this a dir, if we are to skip it
-		shouldRecurse, err := handlerFunc(sourceAbs, targetAbs, targetState)
+		shouldRecurse, err := handlerFunc(linkPath, targetPath, linkState)
 		if err != nil {
 			return err
 		}
-		if (!shouldRecurse || targetState == TargetIgnore) && info.IsDir() {
+		if (!shouldRecurse || linkState == LIgnore) && info.IsDir() {
 			return filepath.SkipDir
 		}
 
@@ -213,29 +192,39 @@ func walkSourceRec(sourceDir string, targetDir string, ignoreList []string, hand
 	})
 }
 
-// Walk the source directory and process symlinks
-func createSymlinks(sourceDir, targetDir string, force, createDirs, confirm, recursive, fold bool, ignoreList []string) error {
+// walkSourceRec recursively walks through the directory tree rooted at targetRoot (must be absolute).
+// For each file or directory (excluding symlinks), it determines the corresponding link path under linkRoot,
+// checks the link state, and invokes handlerFunc to process it.
+//
+// Parameters:
+//   - linkRoot: the root directory where symlinks will be created or checked.
+//   - targetRoot: the root directory to walk through; must be an absolute path.
+//   - ignoreList: list of paths or patterns to ignore during the walk.
+//   - handlerFunc: a callback function that handles each file or directory and returns whether to recurse further.
+//
+// The function skips symlinks in targetRoot, respects the ignoreList, and skips directories
+// based on the handlerFunc's decision or if the link state is ignored.
+func createSymlinks(linkRoot, targetRoot string, force, createDirs, confirm, recursive, fold bool, ignoreList []string) error {
 
-	// Ensure sourceDir and targetDir are valid
-	if !filepath.IsAbs(sourceDir) {
-		return fmt.Errorf("createSymlinks: expected absolute path, got source directory: %s", sourceDir)
+	// Ensure linkPath and targetPath are valid
+	if !filepath.IsAbs(linkRoot) {
+		return fmt.Errorf("createSymlinks: expected absolute path, got source directory: %s", linkRoot)
 	}
-	if !filepath.IsAbs(targetDir) {
-		return fmt.Errorf("createSymlinks: expected absolute path, got target directory: %s", targetDir)
+	if !filepath.IsAbs(targetRoot) {
+		return fmt.Errorf("createSymlinks: expected absolute path, got target directory: %s", targetRoot)
 	}
 
-	link := func(sourceAbs string, targetAbs string, createDirs bool) {
-		if err := fileutil.CreateSymlink(sourceAbs, targetAbs, createDirs); err != nil {
-			sugar.Infof("Error creating symlink %s: %v", linkString(targetAbs, sourceAbs), err)
+	link := func(linkPath string, targetPath string, createDirs bool) {
+		if err := fileutil.CreateSymlink(linkPath, targetPath, createDirs); err != nil {
+			sugar.Infof("Error creating symlink %s: %v", linkString(linkPath, targetPath), err)
 		} else {
-			sugar.Infof("Linked %s", linkString(targetAbs, sourceAbs))
+			sugar.Infof("Linked: %s", linkString(linkPath, targetPath))
 		}
 	}
 
-	handler := func(sourceRel, targetAbs string, targetState TargetState) (bool, error) {
+	handler := func(linkPath, targetPath string, linkState LState) (bool, error) {
 
-		sourceAbs := filepath.Join(sourceDir, sourceRel)
-		isRoot, _ := fileutil.PathsEqual(sourceAbs, sourceDir)
+		isRoot, _ := fileutil.PathsEqual(targetPath, targetRoot)
 
 		// If performing a recursive link, allow walking into subdirectories.
 		// Otherwise, skip walking deeper after processing the current item.
@@ -252,75 +241,71 @@ func createSymlinks(sourceDir, targetDir string, force, createDirs, confirm, rec
 		}
 
 		// Skip and don't recurse into ignored elements
-		if targetState == TargetIgnore {
+		if linkState == LIgnore {
 			shouldRecurse = false
 			return shouldRecurse, nil
 		}
 
 		// If not folding on recursive run and this a dir, don't link it!
-		if fileutil.IsDir(sourceAbs) && recursive && !fold {
+		if fileutil.IsDir(targetPath) && recursive && !fold {
 			return shouldRecurse, nil
 		}
 
 		// TODO: factor this out to be more reusable
-		switch targetState {
-		case TargetIgnore, TargetAlreadyLinked:
-		case TargetMissing:
-			link(sourceAbs, targetAbs, createDirs)
-			return shouldRecurse, nil
-		case TargetMislinkedInternal:
+		switch linkState {
+		case LIgnore, LAlreadyLinked:
+		case LMissing:
+			link(linkPath, targetPath, createDirs)
+
+		case LMislinkedInternal:
 			sugar.Debugf("Target file is broken. Creating correct symlink...")
-			if err := os.RemoveAll(targetAbs); err != nil {
-				return shouldRecurse, fmt.Errorf("failed to remove existing file %s: %w", targetAbs, err)
+			if err := os.RemoveAll(linkPath); err != nil {
+				return shouldRecurse, fmt.Errorf("failed to remove existing file %s: %w", linkPath, err)
 			}
-			link(sourceAbs, targetAbs, createDirs)
-			return shouldRecurse, nil
+			link(linkPath, targetPath, createDirs)
 
-		case TargetMislinkedExternal:
+		case LMislinkedExternal:
 			if force {
-				sugar.Infof("Overwriting existing file at: ", targetAbs)
-				if err := os.RemoveAll(targetAbs); err != nil {
-					return shouldRecurse, fmt.Errorf("failed to remove existing file %s: %w", targetAbs, err)
+				sugar.Infof("Overwriting existing file at: ", linkPath)
+				if err := os.RemoveAll(linkPath); err != nil {
+					return shouldRecurse, fmt.Errorf("failed to remove existing file %s: %w", linkPath, err)
 				}
 			} else {
-				if stringutil.AskForConfirmation("Preview diff of existing file at " + targetAbs + "?") {
-					PreviewDiff(sourceAbs, targetAbs)
+				if stringutil.AskForConfirmation("Preview diff of existing file at " + linkPath + "?") {
+					PreviewDiff(linkPath, targetPath)
 				}
-				if stringutil.AskForConfirmation("Delete existing file at " + targetAbs + "?") {
-					if err := os.RemoveAll(targetAbs); err != nil {
-						return shouldRecurse, fmt.Errorf("failed to remove existing file %s: %w", targetAbs, err)
+				if stringutil.AskForConfirmation("Delete existing file at " + linkPath + "?") {
+					if err := os.RemoveAll(linkPath); err != nil {
+						return shouldRecurse, fmt.Errorf("failed to remove existing file %s: %w", linkPath, err)
 					}
 				} else {
-					fmt.Printf("Skipped: %s\n", targetAbs)
-					return shouldRecurse, nil
+					fmt.Printf("Skipped linking: %s\n", linkPath)
 				}
 			}
 
-		case TargetExistsIdentical:
+		case LExistsIdentical:
 			sugar.Debugf("Target file has the same content. Creating correct symlink...")
-			if err := os.RemoveAll(targetAbs); err != nil {
-				return shouldRecurse, fmt.Errorf("failed to remove existing file %s: %w", targetAbs, err)
+			if err := os.RemoveAll(linkPath); err != nil {
+				return shouldRecurse, fmt.Errorf("failed to remove existing file %s: %w", linkPath, err)
 			}
-			link(sourceAbs, targetAbs, createDirs)
-			return shouldRecurse, nil
+			link(linkPath, targetPath, createDirs)
 
-		case TargetExistsModified:
+		case LExistsModified:
 			if force {
-				sugar.Infof("Overwriting existing file at: ", targetAbs)
-				if err := os.RemoveAll(targetAbs); err != nil {
-					return shouldRecurse, fmt.Errorf("failed to remove existing file %s: %w", targetAbs, err)
+				sugar.Infof("Overwriting existing file at: ", linkPath)
+				if err := os.RemoveAll(linkPath); err != nil {
+					return shouldRecurse, fmt.Errorf("failed to remove existing file %s: %w", linkPath, err)
 				}
 			} else {
-				if stringutil.AskForConfirmation("Preview diff of existing file at " + targetAbs + "?") {
-					PreviewDiff(sourceAbs, targetAbs)
+				if stringutil.AskForConfirmation("Preview diff of existing file at " + linkPath + "?") {
+					PreviewDiff(linkPath, targetPath)
 				}
-				if stringutil.AskForConfirmation("Delete existing file at " + targetAbs + "?") {
-					if err := os.RemoveAll(targetAbs); err != nil {
-						return shouldRecurse, fmt.Errorf("failed to remove existing file %s: %w", targetAbs, err)
+				if stringutil.AskForConfirmation("Delete existing file at " + linkPath + "?") {
+					if err := os.RemoveAll(linkPath); err != nil {
+						return shouldRecurse, fmt.Errorf("failed to remove existing file %s: %w", linkPath, err)
 					}
 				} else {
-					fmt.Printf("Skipped: %s\n", targetAbs)
-					return shouldRecurse, nil
+					fmt.Printf("Skipped: %s\n", linkPath)
 				}
 			}
 
@@ -331,243 +316,94 @@ func createSymlinks(sourceDir, targetDir string, force, createDirs, confirm, rec
 		return shouldRecurse, nil
 	}
 
-	return walkSourceRec(sourceDir, targetDir, ignoreList, handler)
-}
-
-// Walk the target directory and remove symlinks
-func removeSymlinks(sourceDir, targetDir string, ignoreList []string, confirm bool) error {
-
-	// Ensure sourceDir and targetDir are valid
-	if !filepath.IsAbs(sourceDir) {
-		return fmt.Errorf("removeSymlinks: expected absolute path, got source directory: %s", sourceDir)
-	}
-	if !filepath.IsAbs(targetDir) {
-		return fmt.Errorf("removeSymlinks: expected absolute path, got target directory: %s", targetDir)
-	}
-
-	unlink := func(sourceAbs, targetAbs string) {
-		if err := fileutil.RemoveSymlink(targetAbs); err != nil {
-			sugar.Infof("Error removing symlink %s: %v", linkString(targetAbs, sourceAbs), err)
-		} else {
-			sugar.Infof("Removed symlink: %s", linkString(targetAbs, sourceAbs))
-		}
-	}
-
-	handler := func(sourceRel, targetAbs string, targetState TargetState) (bool, error) {
-
-		// TODO: factor this out to be more reusable
-		sourceAbs := filepath.Join(sourceDir, sourceRel)
-
-		switch targetState {
-		case TargetIgnore, TargetMissing, TargetExistsIdentical, TargetExistsModified:
-		case TargetAlreadyLinked, TargetMislinkedInternal:
-			unlink(sourceAbs, targetAbs)
-		case TargetMislinkedExternal:
-
-			// Ask for confirmation if needed
-			if confirm && !stringutil.AskForConfirmation(fmt.Sprintf("Remove symlink %s?", linkString(targetAbs, sourceAbs))) {
-				return false, nil
-			}
-
-			unlink(sourceAbs, targetAbs)
-
-		default:
-			// Handle unexpected state
-		}
-
-		return false, nil
-	}
-
-	return walkSourceRec(sourceDir, targetDir, ignoreList, handler)
-}
-
-type Stats struct {
-	LinkedFiles       int
-	LinkedDirs        int
-	Unlinked          int
-	SameContents      int
-	DifferentContents int
-	IncorrectSymlink  int
-	NoTarget          int
-	Ignored           int
-}
-
-func gatherStats(sourceDir, targetDir string, ignoreList []string) (Stats, error) {
-	stats := Stats{}
-
-	// Ensure sourceDir and targetDir are valid
-	if !filepath.IsAbs(sourceDir) {
-		return stats, fmt.Errorf("gatherStats: expected absolute path, got source directory: %s", sourceDir)
-	}
-	if !filepath.IsAbs(targetDir) {
-		return stats, fmt.Errorf("gatherStats: expected absolute path, got target directory: %s", targetDir)
-	}
-
-	err := walkSourceRec(sourceDir, targetDir, ignoreList, func(sourceRel, targetAbs string, targetState TargetState) (bool, error) {
-
-		switch targetState {
-		case TargetIgnore:
-			stats.Ignored++
-			return true, nil // If the target is a directory, don't go into it
-		case TargetMissing:
-			stats.NoTarget++
-			stats.Unlinked++
-		case TargetAlreadyLinked:
-			stats.LinkedDirs++
-			stats.LinkedFiles++
-		case TargetMislinkedInternal:
-			stats.IncorrectSymlink++
-		case TargetMislinkedExternal:
-			stats.IncorrectSymlink++
-		case TargetExistsIdentical:
-			stats.SameContents++
-		case TargetExistsModified:
-			stats.DifferentContents++
-		default:
-			// Handle unexpected state
-		}
-
-		return true, nil
-
-	})
-
-	return stats, err
-}
-
-func printStats(sourceDir string, targetDir string, ignore []string) {
-	stats, err := gatherStats(sourceDir, targetDir, ignore)
-	if err != nil {
-		sugar.Fatalf("Error gathering stats: %v", err)
-	}
-
-	root := &tree.TreeNode{Text: "Stats"}
-
-	linked := &tree.TreeNode{Text: fmt.Sprintf("Linked files (%d)", stats.LinkedFiles), Icon: "✔", Color: color.New(color.FgGreen).SprintFunc()}
-	ignored := &tree.TreeNode{Text: fmt.Sprintf("Ignored files (%d)", stats.Ignored), Icon: "―", Color: color.New(color.FgBlue).SprintFunc()}
-
-	unlinked := &tree.TreeNode{Text: fmt.Sprintf("Unlinked files (%d)", stats.Unlinked), Icon: "✖", Color: color.New(color.FgRed).SprintFunc()}
-	unlinked.Children = []*tree.TreeNode{
-		{Text: "Target does not exist", Icon: "•", Color: color.New(color.FgRed).SprintFunc()},
-		{Text: "Broken symlink", Icon: "•", Color: color.New(color.FgRed).SprintFunc()},
-		{Text: "Same content, not linked", Icon: "•", Color: color.New(color.FgRed).SprintFunc()},
-	}
-
-	root.Children = []*tree.TreeNode{linked, unlinked, ignored}
-
-	tree.PrintTreeNode(root, "", true)
+	return walkSourceRec(linkRoot, targetRoot, ignoreList, handler)
 }
 
 const ignoreFile = ".lnkitignore"
 
-type Args struct {
-	Command    string `arg:"positional,required" help:"command to run (link, unstow, stats)"`
-	ConfigFile string `arg:"-c,--config" help:"path to config file" default:"lnkit.toml"`
-	TargetDir  string `arg:"-t,--target" help:"Override target directory"`
-	SourceDir  string `arg:"-s,--source" help:"Override source directory"`
-	Recursive  bool   `arg:"--rec" help:"Recursively process nested directories"`
-	Fold       bool   `arg:"--fold" help:"Link whole directories where applicable"`
-}
-
-var recursive = false
-var fold = false
-var create_dirs = true
+// Flags
+var (
+	recursive  bool
+	fold       bool
+	force      bool
+	createDirs bool
+)
 
 func main() {
 
-	var args Args
-	arg.MustParse(&args)
+	InitLogger("Debug")
 
-	// Parse config
-	var cfg Config = defaultConfig
-	if fileutil.IsRegularFile(args.ConfigFile) {
-		if _, err := toml.DecodeFile(args.ConfigFile, &cfg); err != nil {
-			sugar.Fatalf("Failed to parse config: %v", err)
-			return
-		}
+	rootCmd := &cobra.Command{
+		Use:   "lnk",
+		Short: "Modern symlink manager",
 	}
 
-	// Initialize logging
-	InitLogger(cfg.Options.LogLevel)
+	// Global flags can be defined here if needed
 
-	// Parse config file
-	if !fileutil.IsRegularFile(args.ConfigFile) {
-		sugar.Infof("No config file found at %s. Using default config.", args.ConfigFile)
-	} else {
-		sugar.Infof("Using config at %s", args.ConfigFile)
+	// link command
+	linkCmd := &cobra.Command{
+		Use:   "link link_path target_path",
+		Short: "Create symlinks from link_path to target_path",
+		Args: func(cmd *cobra.Command, args []string) error {
+			logArgs()
+			if len(args) < 2 {
+				return fmt.Errorf("Requires a link_path and target_path")
+			}
+			return nil
+		},
+		RunE: runLink,
 	}
+	linkCmd.Flags().BoolVar(&recursive, "rec", false, "Recursively process nested directories")
+	linkCmd.Flags().BoolVar(&fold, "fold", false, "Link whole directories where applicable")
+	linkCmd.Flags().BoolVar(&force, "force", false, "Force")
+	linkCmd.Flags().BoolVar(&createDirs, "create-dirs", true, "Create dirs")
 
-	// Expand and override source/target dirs from CLI args if provided
-	if args.SourceDir != "" {
-		cfg.Options.SourceDir = args.SourceDir
+	rootCmd.AddCommand(linkCmd)
+	if err := rootCmd.Execute(); err != nil {
+		log.Fatal(err)
 	}
-	if args.TargetDir != "" {
-		cfg.Options.TargetDir = args.TargetDir
-	}
+}
 
-	// Parse source and target directories
-	sourceDir, _ := fileutil.ExpandPath(cfg.Options.SourceDir)
-	targetDir, _ := fileutil.ExpandPath(cfg.Options.TargetDir)
-	// Ensure directories exist
-	if !fileutil.IsDir(sourceDir) {
-		fmt.Printf("Source directory %s not found\n", sourceDir)
-		return
-	}
-	if !fileutil.IsDir(targetDir) {
-		fmt.Printf("Target directory %s not found\n", targetDir)
-		return
-	}
-	// Ensure directories aren't a link
-	if fileutil.IsSymlink(sourceDir) {
-		fmt.Printf("Source directory %s must not be a symlink\n", sourceDir)
-		return
-	}
-	if fileutil.IsSymlink(targetDir) {
-		fmt.Printf("Target directory %s must not be a symlink\n", targetDir)
-		return
-	}
-	// Ensure target dir is not a child of the source
-	isChild, err := fileutil.IsChildPath(targetDir, sourceDir)
+func logArgs() {
+	sugar.Debugf("Flags --------------------")
+	sugar.Debugf("Recursive flag: %t ", recursive)
+	sugar.Debugf("Recursive flag: %t ", recursive)
+	sugar.Debugf("Force flag: %t", force)
+	sugar.Debugf("Create dirs flag: %t", createDirs)
+	sugar.Debugf("--------------------------")
+}
+
+func runLink(cmd *cobra.Command, args []string) error {
+
+	linkPath, err := fileutil.ExpandPath(args[0])
 	if err != nil {
-		fmt.Printf("Error checking path relationship: %v\n", err)
-		return
-	}
-	if isChild {
-		fmt.Printf("Target directory %s is a child of source %s\n", targetDir, sourceDir)
-		return
-	}
-	sugar.Infof("Using source directory %s", sourceDir)
-	sugar.Infof("Using target directory %s", targetDir)
-
-	// Add additional ignore rules
-	ignoreBlank := true
-	if fileutil.IsRegularFile(ignoreFile) {
-		additionalIgnores, err := fileutil.ReadFileLines(ignoreFile, ignoreBlank)
-		if err != nil {
-			fmt.Printf("Error reading %s: %v\n", ignoreFile, err)
-			return
-		}
-		cfg.Options.Ignore = append(cfg.Options.Ignore, additionalIgnores...)
-		sugar.Debugf("Adding additional ignore rules: %s", additionalIgnores)
-	} else {
-		sugar.Debugf("No ignore file found")
+		return fmt.Errorf("failed to expand link path: %w", err)
 	}
 
-	// Handle arguments
-	switch args.Command {
-	case "link":
-		if err := createSymlinks(sourceDir, targetDir, cfg.Options.Force, cfg.Options.CreateDirs, cfg.Options.Confirm, args.Recursive, args.Fold, cfg.Options.Ignore); err != nil {
-			sugar.Fatalf("Error linking: %v", err)
-		}
-
-	case "unlink":
-		if err := removeSymlinks(sourceDir, targetDir, cfg.Options.Ignore, cfg.Options.Confirm); err != nil {
-			sugar.Fatalf("Error unlinking: %v", err)
-		}
-
-	case "stats":
-		printStats(sourceDir, targetDir, cfg.Options.Ignore)
-
-	default:
-		fmt.Println("Unknown command:", args.Command)
+	targetPath, err := fileutil.ExpandPath(args[1])
+	if err != nil {
+		return fmt.Errorf("failed to expand target path: %w", err)
 	}
+
+	sugar.Debugf("linkPath: %s", linkPath)
+	sugar.Debugf("TargetPath: %s", targetPath)
+
+	createSymlinks(linkPath, targetPath, force, createDirs, false, recursive, fold, []string{".git"})
+
+	// TODO: Call your existing linking functions
+	return nil
+}
+
+func runUnlink(cmd *cobra.Command, args []string) error {
+	// Your unlink logic here
+
+	// TODO: Call your existing unlinking functions
+	return nil
+}
+
+func runStats(cmd *cobra.Command, args []string) error {
+	// Your stats logic here
+
+	// TODO: Call your existing stats functions
+	return nil
 }
