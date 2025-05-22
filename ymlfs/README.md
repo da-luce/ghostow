@@ -2,6 +2,8 @@
 
 `ymlfs` is a Go package for converting between YAML representations of filesystem structures and actual directories on disk. It supports regular files, directories, and symlinks.
 
+FIXME: **I haven't come across a standardized way to represent file trees as serialized data, so until I find one, this sacrilegious package exists purely out of necessity and spite.**
+
 ## Features
 
 - 🗂️ Define directory trees in YAML

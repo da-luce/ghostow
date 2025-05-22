@@ -9,150 +9,193 @@ import (
 	"lnkit/ymlfs"
 
 	"github.com/spf13/cobra"
-	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"gopkg.in/yaml.v3"
 )
 
-func TestLinkCommand_CreatesSymlink_FtoF(t *testing.T) {
-	InitLogger("Fatal")
-	// Setup temp directories and files
-	tmpDir := t.TempDir()
-	linkPath := filepath.Join(tmpDir, "mylink")
-	targetPath := filepath.Join(tmpDir, "mytarget")
-
-	// Create target file
-	err := os.WriteFile(targetPath, []byte("hello"), 0644)
-	require.NoError(t, err)
-
-	// Build root command and add the real `link` subcommand
+func buildRootCmd() *cobra.Command {
 	rootCmd := &cobra.Command{Use: "lnk"}
 	rootCmd.AddCommand(NewLinkCmd())
+	return rootCmd
+}
 
-	// Capture output
+func runCommand(t *testing.T, cmd *cobra.Command, args ...string) string {
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetErr(&out)
+	cmd.SetArgs(args)
+
+	err := cmd.Execute()
+	require.NoError(t, err)
+
+	return out.String()
+}
+
+func assertSymlink(t *testing.T, linkPath, expectedTarget string) {
+	t.Helper()
+
+	info, err := os.Lstat(linkPath)
+	require.NoError(t, err)
+	require.True(t, info.Mode()&os.ModeSymlink != 0, "Expected a symlink")
+
+	actualTarget, err := os.Readlink(linkPath)
+	require.NoError(t, err)
+	require.Equal(t, expectedTarget, actualTarget)
+}
+
+func testLinkCommand(t *testing.T, initialYAML, expectedYAML []byte, cmdName, linkPath, targetPath string, args ...string) {
+	InitLogger("Fatal")
+
+	// Put into a temp dir--relativize the link and target path
+	tmpDir := t.TempDir()
+	linkPath = filepath.Join(tmpDir, linkPath)
+	targetPath = filepath.Join(tmpDir, targetPath)
+
+	// Create initial structure from YAML
+	err := ymlfs.FromYml(tmpDir, initialYAML)
+	require.NoError(t, err)
+
+	// Prepare root command and add subcommands
+	rootCmd := &cobra.Command{Use: "lnk"}
+	rootCmd.AddCommand(NewLinkCmd()) // add other subcommands if needed
+
+	// Build args: cmdName + linkPath + targetPath + any other args
+	allArgs := []string{cmdName, linkPath, targetPath}
+	allArgs = append(allArgs, args...)
+	rootCmd.SetArgs(allArgs)
+
 	var out bytes.Buffer
 	rootCmd.SetOut(&out)
 	rootCmd.SetErr(&out)
 
-	// Set args to simulate: lnk link linkPath targetPath
-	rootCmd.SetArgs([]string{"link", linkPath, targetPath})
-
-	// Run command
+	// Execute command
 	err = rootCmd.Execute()
-	require.NoError(t, err)
+	require.NoError(t, err, "command output: %s", out.String())
 
-	// Assert symlink was created
-	fi, err := os.Lstat(linkPath)
-	require.NoError(t, err)
-	require.True(t, fi.Mode()&os.ModeSymlink != 0, "Expected a symlink")
-
-	resolved, err := os.Readlink(linkPath)
-	require.NoError(t, err)
-	require.Equal(t, targetPath, resolved)
+	// Assert final directory matches expected YAML
+	ymlfs.AssertDirMatchesYAML(t, tmpDir, string(expectedYAML))
 }
 
-func TestLinkCommand_CreatesSymlink_DtoD(t *testing.T) {
-	InitLogger("Fatal")
+func TestLink_LinkFile(t *testing.T) {
+	initial := []byte(`
+targetfile: null
+`)
 
-	// Setup temp root dir
-	tmpDir := t.TempDir()
-	linkPath := filepath.Join(tmpDir, "mylinkdir")
-	targetPath := filepath.Join(tmpDir, "mytargetdir")
+	expected := []byte(`
+targetfile: null
+link:
+  symlink: targetfile
+`)
 
-	// Create target directory
-	err := os.Mkdir(targetPath, 0755)
-	require.NoError(t, err)
-
-	// Build root command and add the real `link` subcommand
-	rootCmd := &cobra.Command{Use: "lnk"}
-	rootCmd.AddCommand(NewLinkCmd())
-
-	// Capture output
-	var out bytes.Buffer
-	rootCmd.SetOut(&out)
-	rootCmd.SetErr(&out)
-
-	// Set args to simulate: lnk link linkPath targetPath
-	rootCmd.SetArgs([]string{"link", linkPath, targetPath})
-
-	// Run command
-	err = rootCmd.Execute()
-	require.NoError(t, err)
-
-	// Assert symlink was created
-	fi, err := os.Lstat(linkPath)
-	require.NoError(t, err)
-	require.True(t, fi.Mode()&os.ModeSymlink != 0, "Expected a symlink")
-
-	resolved, err := os.Readlink(linkPath)
-	require.NoError(t, err)
-	require.Equal(t, targetPath, resolved)
+	testLinkCommand(t, initial, expected, "link", "link", "targetfile")
 }
 
-func TestLinkCommand_CreatesSymlink_RecSimple(t *testing.T) {
-	InitLogger("Fatal")
+func TestLink_LinkFileRelativePath(t *testing.T) {
+	initial := []byte(`
+targetfile: null
+`)
 
-	tmpDir := t.TempDir()
+	expected := []byte(`
+targetfile: null
+link:
+  symlink: targetfile
+`)
 
-	// YAML description of the directory actualFs
-	actualFs := `
+	testLinkCommand(t, initial, expected, "link", "link", "./targetfile")
+}
+
+func TestLink_LinkSymlink(t *testing.T) {
+	initial := []byte(`
+targetfile: null
+1stlink:
+  symlink: targetfile
+`)
+
+	expected := []byte(`
+targetfile: null
+1stlink:
+  symlink: targetfile
+2ndlink:
+  symlink: 1stlink
+`)
+
+	testLinkCommand(t, initial, expected, "link", "2ndlink", "1stlink")
+}
+
+func TestLink_NoTarget(t *testing.T) {
+	initial := []byte(`
+targetfile: null
+`)
+
+	expected := []byte(`
+targetfile: null
+`)
+
+	testLinkCommand(t, initial, expected, "link", "link", "nonexistentfile")
+}
+
+func TestLink_LinkDirectory(t *testing.T) {
+	initial := []byte(`
+mytargetdir: {}
+`)
+
+	expected := []byte(`
+mylinkdir:
+  symlink: mytargetdir
+mytargetdir: {}
+`)
+
+	testLinkCommand(t, initial, expected, "link", "mylinkdir", "mytargetdir")
+}
+
+func TestLink_LinkRecursive(t *testing.T) {
+	initial := []byte(`
 file1.txt: null
 config: {}
 .dotfiles:
   file2.txt: null
   dirB:
     file3.txt: null
-`
+`)
 
-	// Use your FromYml helper to create the directory structure on disk
-	err := ymlfs.FromYml(tmpDir, []byte(actualFs))
-	require.NoError(t, err)
-
-	linkPath := filepath.Join(tmpDir, "config")
-	targetPath := filepath.Join(tmpDir, ".dotfiles")
-
-	rootCmd := &cobra.Command{Use: "lnk"}
-	rootCmd.AddCommand(NewLinkCmd())
-
-	var out bytes.Buffer
-	rootCmd.SetOut(&out)
-	rootCmd.SetErr(&out)
-
-	rootCmd.SetArgs([]string{"link", "--rec", linkPath, targetPath})
-
-	err = rootCmd.Execute()
-	require.NoError(t, err)
-
-	expectedFs := `
+	expected := []byte(`
 file1.txt: null
 config:
-    file2.txt:
-        symlink: ../.dotfiles/file2.txt
-    dirB:
-        file3.txt:
-            symlink: ../../.dotfiles/dirB/file3.txt
+  file2.txt:
+    symlink: ../.dotfiles/file2.txt
+  dirB:
+    file3.txt:
+      symlink: ../../.dotfiles/dirB/file3.txt
 .dotfiles:
   file2.txt: null
   dirB:
     file3.txt: null
-`
+`)
 
-	// Read back the directory structure from disk to compare
-	actualYamlBytes, err := ymlfs.ToYml(tmpDir)
-	require.NoError(t, err)
+	testLinkCommand(t, initial, expected, "link", "config", ".dotfiles", "--rec")
+}
 
-	// Unmarshal expected YAML into map for comparison
-	var expectedMap map[string]interface{}
-	err = yaml.Unmarshal([]byte(expectedFs), &expectedMap)
-	require.NoError(t, err)
+func TestLink_LinkRecursiveFold(t *testing.T) {
+	initial := []byte(`
+file1.txt: null
+config: {}
+.dotfiles:
+  file2.txt: null
+  dirB:
+    file3.txt: null
+`)
 
-	// Unmarshal actual YAML into map for comparison
-	var actualMap map[string]interface{}
-	err = yaml.Unmarshal(actualYamlBytes, &actualMap)
-	require.NoError(t, err)
+	expected := []byte(`
+file1.txt: null
+config:
+  file2.txt:
+    symlink: ../.dotfiles/file2.txt
+  dirB:
+      symlink: ../.dotfiles/dirB
+.dotfiles:
+  file2.txt: null
+  dirB:
+    file3.txt: null
+`)
 
-	// Compare the expected and actual directory trees
-	assert.Equal(t, expectedMap, actualMap)
-
-	// You can add assertions here for the symlink(s) if needed
+	testLinkCommand(t, initial, expected, "link", "config", ".dotfiles", "--rec", "--fold")
 }

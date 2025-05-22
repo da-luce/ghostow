@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"testing"
 
+	"github.com/stretchr/testify/require"
 	"gopkg.in/yaml.v3"
 )
 
@@ -133,4 +135,20 @@ func ToMap(data []byte) (map[string]interface{}, error) {
 	var m map[string]interface{}
 	err := yaml.Unmarshal(data, &m)
 	return m, err
+}
+
+// AssertDirMatchesYAML compares the structure of dirPath against the expected YAML description.
+func AssertDirMatchesYAML(t *testing.T, dirPath string, expectedYAML string) {
+	t.Helper()
+
+	actualYAML, err := ToYml(dirPath)
+	require.NoError(t, err, "failed to generate YAML from directory")
+
+	actualMap, err := ToMap(actualYAML)
+	require.NoError(t, err, "failed to unmarshal actual YAML")
+
+	expectedMap, err := ToMap([]byte(expectedYAML))
+	require.NoError(t, err, "failed to unmarshal expected YAML")
+
+	require.Equal(t, expectedMap, actualMap, "directory structure does not match expected YAML")
 }
