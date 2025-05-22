@@ -127,3 +127,10 @@ func buildYmlTree(base string) (map[string]interface{}, error) {
 
 	return result, nil
 }
+
+// toMap unmarshals YAML bytes into a map[string]interface{}.
+func ToMap(data []byte) (map[string]interface{}, error) {
+	var m map[string]interface{}
+	err := yaml.Unmarshal(data, &m)
+	return m, err
+}
